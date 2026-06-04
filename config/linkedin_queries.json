@@ -1,0 +1,338 @@
+{
+  "version": 1,
+  "defaults": {
+    "cooldown_hours": 32,
+    "max_runs_per_session": 5,
+    "bucket_weights": {
+      "core_pm_geo": 0.12,
+      "senior_pm": 0.2,
+      "domain_pm": 0.35,
+      "motion_pm": 0.1,
+      "fresh_signal": 0.15,
+      "broad_pm_volume": 0.15,
+      "company_watch": 0.05
+    },
+    "domain_pm_rotation_order": [
+      "fintech_pm",
+      "payments_pm",
+      "saas_pm",
+      "platform_pm",
+      "workflow_pm",
+      "banking_pm",
+      "ai_pm"
+    ],
+    "domain_pm_weights": {
+      "fintech_pm": 1.2,
+      "payments_pm": 1.2,
+      "saas_pm": 1.1,
+      "platform_pm": 1.0,
+      "workflow_pm": 1.0,
+      "banking_pm": 0.9,
+      "ai_pm": 0.35
+    },
+    "bucket_max_slots": {
+      "core_pm_geo": 1,
+      "company_watch": 1
+    },
+    "priority_anchor": {
+      "enabled": true,
+      "query_id": "top_applicants_anchor",
+      "bypass_cooldown": true,
+      "counts_toward_max_runs": true,
+      "fallback_query_id": "core_pm_india",
+      "fallback_if_anchor_on_cooldown": true,
+      "fallback_if_anchor_disabled_in_catalog": true
+    },
+    "priority_followup": {
+      "enabled": true,
+      "query_id": "broad_pm_easy_apply_7d",
+      "bypass_cooldown": true
+    }
+  },
+  "filter_profiles": {
+    "baseline": {
+      "f_TPR": "r604800",
+      "sortBy": "DD",
+      "f_JT": "F"
+    },
+    "fresh_tight": {
+      "f_TPR": "r259200",
+      "sortBy": "DD",
+      "f_JT": "F"
+    },
+    "fresh_24h": {
+      "f_TPR": "r86400",
+      "sortBy": "DD",
+      "f_JT": "F"
+    },
+    "hiring_signal": {
+      "f_TPR": "r259200",
+      "sortBy": "DD",
+      "f_JT": "F"
+    },
+    "top_applicants_pm": {
+      "sortBy": "DD",
+      "f_JT": "F",
+      "f_JIYN": "true"
+    },
+    "qualification_landing": {},
+    "easy_apply_7d": {
+      "f_TPR": "r604800",
+      "f_AL": "true",
+      "sortBy": "DD",
+      "f_JT": "F"
+    },
+    "domain_tight": {
+      "f_TPR": "r604800",
+      "sortBy": "DD",
+      "f_JT": "F"
+    },
+    "company_narrow": {
+      "f_TPR": "r604800",
+      "sortBy": "DD",
+      "f_JT": "F"
+    }
+  },
+  "queries": [
+    {
+      "id": "core_pm_india",
+      "label": "Core PM India",
+      "query_group": "core_pm_geo",
+      "keywords": "product manager",
+      "location": "India",
+      "filter_profile": "baseline",
+      "enabled": true
+    },
+    {
+      "id": "core_pm_bangalore",
+      "label": "Core PM Bangalore",
+      "query_group": "core_pm_geo",
+      "keywords": "product manager",
+      "location": "Bangalore",
+      "filter_profile": "baseline",
+      "enabled": true
+    },
+    {
+      "id": "senior_pm_india",
+      "label": "Senior PM India",
+      "query_group": "senior_pm",
+      "keywords": "senior product manager",
+      "location": "India",
+      "filter_profile": "baseline",
+      "enabled": true
+    },
+    {
+      "id": "senior_pm_bangalore",
+      "label": "Senior PM Bangalore",
+      "query_group": "senior_pm",
+      "keywords": "senior product manager",
+      "location": "Bangalore",
+      "filter_profile": "domain_tight",
+      "enabled": true
+    },
+    {
+      "id": "pm2_india",
+      "label": "PM II India",
+      "query_group": "senior_pm",
+      "keywords": "product manager II",
+      "location": "India",
+      "filter_profile": "baseline",
+      "enabled": true
+    },
+    {
+      "id": "product_owner_india",
+      "label": "Product Owner India",
+      "query_group": "senior_pm",
+      "keywords": "product owner",
+      "location": "India",
+      "filter_profile": "domain_tight",
+      "enabled": true
+    },
+    {
+      "id": "fintech_pm_india",
+      "label": "Fintech PM India",
+      "query_group": "domain_pm",
+      "domain_sub": "fintech_pm",
+      "keywords": "product manager fintech",
+      "location": "India",
+      "filter_profile": "domain_tight",
+      "enabled": true
+    },
+    {
+      "id": "payments_pm_india",
+      "label": "Payments PM India",
+      "query_group": "domain_pm",
+      "domain_sub": "payments_pm",
+      "keywords": "payments product manager",
+      "location": "India",
+      "filter_profile": "domain_tight",
+      "enabled": true
+    },
+    {
+      "id": "saas_pm_india",
+      "label": "SaaS PM India",
+      "query_group": "domain_pm",
+      "domain_sub": "saas_pm",
+      "keywords": "SaaS product manager",
+      "location": "India",
+      "filter_profile": "domain_tight",
+      "enabled": true
+    },
+    {
+      "id": "platform_pm_india",
+      "label": "Platform PM India",
+      "query_group": "domain_pm",
+      "domain_sub": "platform_pm",
+      "keywords": "platform product manager",
+      "location": "India",
+      "filter_profile": "domain_tight",
+      "enabled": true
+    },
+    {
+      "id": "workflow_pm_india",
+      "label": "Workflow PM India",
+      "query_group": "domain_pm",
+      "domain_sub": "workflow_pm",
+      "keywords": "workflow product manager",
+      "location": "India",
+      "filter_profile": "domain_tight",
+      "enabled": true
+    },
+    {
+      "id": "banking_pm_india",
+      "label": "Banking PM India",
+      "query_group": "domain_pm",
+      "domain_sub": "banking_pm",
+      "keywords": "banking product manager",
+      "location": "India",
+      "filter_profile": "domain_tight",
+      "enabled": true
+    },
+    {
+      "id": "ai_pm_india",
+      "label": "AI PM India",
+      "query_group": "domain_pm",
+      "domain_sub": "ai_pm",
+      "keywords": "AI product manager",
+      "location": "India",
+      "filter_profile": "domain_tight",
+      "enabled": true
+    },
+    {
+      "id": "growth_pm_india",
+      "label": "Growth PM India",
+      "query_group": "motion_pm",
+      "keywords": "growth product manager",
+      "location": "India",
+      "filter_profile": "baseline",
+      "enabled": true
+    },
+    {
+      "id": "b2b_pm_india",
+      "label": "B2B PM India",
+      "query_group": "motion_pm",
+      "keywords": "B2B product manager",
+      "location": "India",
+      "filter_profile": "domain_tight",
+      "enabled": true
+    },
+    {
+      "id": "top_applicants_anchor",
+      "label": "Top Applicant / How You Fit PM",
+      "query_group": "fresh_signal",
+      "keywords": "product manager",
+      "location": "India",
+      "url_mode": "qualification_landing",
+      "landing_url": "https://www.linkedin.com/jobs/search-results/?currentJobId=PLACEHOLDER_JOB_001&showHowYouFit=HOW_YOU_FIT&keywords=Product%20Manager&origin=QUALIFICATION_LANDING&originToLandingJobPostings=PLACEHOLDER_JOB_001%2CPLACEHOLDER_JOB_002%2CPLACEHOLDER_JOB_003&geoId=90009633",
+      "filter_profile": "qualification_landing",
+      "enabled": true
+    },
+    {
+      "id": "broad_pm_easy_apply_7d",
+      "label": "Broad PM Easy Apply 7d",
+      "query_group": "broad_pm_volume",
+      "keywords": "product manager",
+      "location": "India",
+      "url_mode": "search_results_landing",
+      "landing_url": "https://www.linkedin.com/jobs/search-results/?currentJobId=PLACEHOLDER_JOB_002&keywords=product%20manager&origin=JOB_SEARCH_PAGE_JOB_FILTER&referralSearchId=PLACEHOLDER_REFERRAL_SEARCH_ID&f_TPR=r604800&f_AL=true",
+      "filter_profile": "easy_apply_7d",
+      "enabled": true
+    },
+    {
+      "id": "fresh_senior_pm_24h",
+      "label": "Fresh Senior PM 24h",
+      "query_group": "fresh_signal",
+      "keywords": "senior product manager",
+      "location": "India",
+      "filter_profile": "fresh_24h",
+      "enabled": true
+    },
+    {
+      "id": "fresh_fintech_3d",
+      "label": "Fresh Fintech PM 3d",
+      "query_group": "fresh_signal",
+      "keywords": "product manager fintech",
+      "location": "India",
+      "filter_profile": "fresh_tight",
+      "enabled": true
+    },
+    {
+      "id": "fresh_payments_3d",
+      "label": "Fresh Payments PM 3d",
+      "query_group": "fresh_signal",
+      "keywords": "payments product manager",
+      "location": "Bangalore",
+      "filter_profile": "fresh_tight",
+      "enabled": true
+    },
+    {
+      "id": "fresh_saas_24h",
+      "label": "Fresh SaaS PM 24h",
+      "query_group": "fresh_signal",
+      "keywords": "SaaS product manager",
+      "location": "India",
+      "filter_profile": "fresh_24h",
+      "enabled": true
+    },
+    {
+      "id": "watch_razorpay",
+      "label": "Watch Razorpay PM",
+      "query_group": "company_watch",
+      "keywords": "product manager",
+      "location": "India",
+      "company": "Razorpay",
+      "filter_profile": "company_narrow",
+      "enabled": true
+    },
+    {
+      "id": "watch_groww",
+      "label": "Watch Groww PM",
+      "query_group": "company_watch",
+      "keywords": "product manager",
+      "location": "India",
+      "company": "Groww",
+      "filter_profile": "company_narrow",
+      "enabled": true
+    },
+    {
+      "id": "watch_phonepe",
+      "label": "Watch PhonePe PM",
+      "query_group": "company_watch",
+      "keywords": "product manager",
+      "location": "India",
+      "company": "PhonePe",
+      "filter_profile": "company_narrow",
+      "enabled": true
+    },
+    {
+      "id": "watch_cred",
+      "label": "Watch CRED PM",
+      "query_group": "company_watch",
+      "keywords": "product manager",
+      "location": "India",
+      "company": "CRED",
+      "filter_profile": "company_narrow",
+      "enabled": true
+    }
+  ]
+}

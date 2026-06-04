@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "defaults": {
+    "max_feeds_per_session": 2,
+    "inter_feed_pause_sec": 30
+  },
+  "feeds": [
+    {
+      "id": "matching_personalized",
+      "label": "Personalized matching feed",
+      "url": "https://www.instahyre.com/candidate/opportunities/?matching=true",
+      "enabled": true
+    },
+    {
+      "id": "pm_curated_search",
+      "label": "Curated PM search (search-jobs)",
+      "url": "https://www.instahyre.com/search-jobs?company_size=0&isLandingPage=true&job_functions=%2Fapi%2Fv1%2Fjob_category%2F2&job_type=1&location=Work+From+Home,Anywhere+in+India&offset=20&search=true&years=4.5",
+      "enabled": true
+    }
+  ]
+}

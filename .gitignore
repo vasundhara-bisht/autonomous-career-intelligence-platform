@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.egg-info/
+venv/
+.venv/
+
+# Local secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# Runtime persistence (live state under data/)
+/data/*
+!data/.gitkeep
+
+# Legacy root-level runtime files (pre-migration; migrate via paths.migrate_legacy_root_runtime_files)
+/historical_jobs.csv
+/jobs.csv
+/job_descriptions.csv
+/recruiter_crm.csv
+/job_state.csv
+.linkedin_query_state.json
+/.linkedin_query_state.json
+/linkedin_auth.json
+/instahyre_auth.json
+
+# Archives (reset snapshots only)
+/archive/reset-*/
+archive/*.tar.gz
+
+# Logs and debug/runtime artifacts
+logs/
+*.log
+*_debug_*.txt
+*_run.txt
+canonical_fix_run.txt
+collision_debug_run.txt
+linkedin_playwright_trace.zip
+
+# IDE
+.vscode/
+.cursor/
+
+# OS
+.DS_Store
+**/.DS_Store
