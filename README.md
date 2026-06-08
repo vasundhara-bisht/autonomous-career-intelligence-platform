@@ -4,10 +4,6 @@ An AI-powered job intelligence system that aggregates opportunities across multi
 
 Built for product-minded operators who want **signal over noise** - with transparent pipeline stages, explainable scoring, and production-grade observability.
 
-**Jump to:** **Documentation** · **Quick Start** · **Why I Built This** · **Key Features** · **Local Setup for Developers**
-
-> **Navigation:** On GitHub, `#heading` links in the rendered README scroll to sections. In **Cursor**, preview fragment links are unreliable; use the **Outline** panel or **Cmd+click** `#heading` links in the editor source.
-
 ---
 
 ## Documentation
