@@ -80,8 +80,8 @@ For a recruiter or hiring manager reviewing this work, the useful signal is not 
 - **Reduced repeated processing:** Historical routing sends fully processed jobs straight to merge, and "needs AI only" jobs skip Stage 1, dedup, and description fetch. Repeat runs spend effort on net-new work instead of replaying the full pipeline.
 - **Lower unnecessary AI workload:** Stage-1 filtering and deduplication run before batch scoring. Description text is reused from the store when already captured, so model calls concentrate on jobs that cleared cheaper gates.
 - **Faster identification of relevant PM roles:** Title and location rules remove obvious mismatches early. Semantic scoring then reads full descriptions, which matters when titles like "Product Manager" hide different levels and domains.
-- **Cleaner deduplicated job intelligence:** V2 identity, exact URL matching, and fuzzy title/company checks reduce the same listing appearing under multiple links in a single `jobs.csv` export.
-- **Persistent recruiter context across runs:** Hiring manager and recruiter metadata (especially from Instahyre and LinkedIn) sync into `recruiter_crm.csv`, so sourcing sessions build on prior contact context instead of resetting each time.
+- **Cleaner deduplicated job intelligence:** V2 identity, exact URL matching, and fuzzy title/company checks reduce the same listing appearing under multiple links in the latest acquisition cohort.
+- **Persistent recruiter context across runs:** Hiring manager and recruiter metadata (especially from Instahyre and LinkedIn) persist in SQLite recruiter memory (with optional CSV export), so sourcing sessions build on prior contact context instead of resetting each time.
 - **Improved explainability of recommendations:** Each scored role carries a short `reason` tied to profile constraints, not only a numeric `ai_score`, making it easier to defend why a role is worth review or should be skipped.
 - **Inspectable operations:** Stage summaries, identity health, and per-batch AI progress give concrete counts per run (accepted vs rejected, deduped, queued for scoring), which supports tuning sources and filters with evidence rather than intuition.
 
@@ -114,7 +114,7 @@ You do not need to run code to understand what this project does. Think of it as
 Someone with the project installed locally can:
 
 1. Run the pipeline once to refresh recommendations.
-2. Open the **Streamlit dashboard** to browse scored roles, history, and location breakdowns.
+2. Open the **Streamlit dashboard** to browse scored roles, filter the job table, review source distribution, and manage recruiter relationships — see [Dashboard](#dashboard).
 
 Detailed install steps: [docs/CLONE_SETUP.md](docs/CLONE_SETUP.md) and [Local Setup for Developers](#local-setup-for-developers) at the end of this README.
 
@@ -141,6 +141,8 @@ This platform turns fragmented job listings into a **single career intelligence 
 
 The system is designed as a **personal career copilot** that can be demonstrated to recruiters, hiring managers, and product/AI teams as a serious orchestration product - not a one-off scraper script.
 
+**Product memory:** SQLite (`data/ai_job_agent.db`) is the default source of truth under D8B; CSV files under `data/` are optional exports for backup and handoff.
+
 > **Diagram:** See [System Architecture](#system-architecture) for the end-to-end platform overview.
 
 ---
@@ -156,8 +158,19 @@ The system is designed as a **personal career copilot** that can be demonstrated
 - **AI batch scoring** - Profile-aligned semantic evaluation with structured JSON reasons
 - **Recruiter intelligence** - CRM sync from hiring manager / recruiter metadata (especially Instahyre)
 - **Tier-2 metadata (Instahyre)** - Posted date and age from Schema.org JSON-LD on detail pages
-- **Streamlit dashboard** - Review scored roles, recruiter contacts, history, and location breakdowns without reading terminal logs
+- **Streamlit dashboard** - Review scored roles, source distribution, pipeline stages, and recruiter CRM without reading terminal logs — see [Dashboard](#dashboard)
 - **Operational observability** - Summarized logs for Stage-1, identity health, LinkedIn/Instahyre acquisition, and AI batches
+- **Scheduled production acquisition** - Optional twice-daily local runs (07:00 / 19:00) via macOS `launchd`, file-locked wrappers in `scripts/scheduling/`, and post-run parity validation; dashboard review remains operator-driven
+
+---
+
+## Dashboard
+
+<p align="center">
+  <img src="./diagrams/dashboard-hero.png" alt="Streamlit dashboard: KPIs, source distribution, and job listings" width="720" />
+</p>
+
+The **Streamlit dashboard** is the operator UI for reviewing acquisition output: scored jobs with explainable reasons, editable pipeline stages and notes, a source distribution chart, collapsible pipeline analytics, and a recruiter relationship manager. Open after a pipeline run with `streamlit run dashboard/app.py`.
 
 ---
 
@@ -179,15 +192,15 @@ This diagram shows the governed workflow from multi-source job ingestion through
 
 ## System Architecture
 
-![Autonomous Career Intelligence Platform - system architecture](./diagrams/architecture-diagram.png)
+![System Architecture](./diagrams/architecture-diagram.png)
 
-The platform follows a single governed path from fragmented listings to actionable recommendations. **Multi-source ingestion** pulls roles from LinkedIn, Instahyre, Greenhouse, Lever, and WeWorkRemotely under per-source run controls. **Layered filtering** normalizes and routes each job through historical memory, fast Stage-1 relevance checks, and deduplication before expensive description fetch and AI work. **AI scoring** evaluates full job text in batches against a candidate profile, returning a fit score and a short, explainable reason. **Recruiter-aware memory** persists historical state, stored descriptions, and CRM-style contact metadata so repeat runs stay incremental rather than starting from zero. **Operational dashboards** surface ranked outputs in Streamlit and summarized pipeline logs for live run monitoring.
+The platform follows a single governed path from fragmented listings to actionable recommendations. **Multi-source ingestion** pulls roles from LinkedIn, Instahyre, Greenhouse, Lever, and WeWorkRemotely under per-source run controls. In production, **macOS launchd** can trigger the pipeline on a fixed schedule through file-locked wrappers in `scripts/scheduling/` and post-run parity validation. **SQLite product memory** (`data/ai_job_agent.db`) is the default store for jobs, evaluations, descriptions, and recruiter metadata. **Layered filtering** normalizes and routes each job through historical memory, fast Stage-1 relevance checks, and deduplication before expensive description fetch and AI work. **AI scoring** evaluates full job text in batches against a candidate profile, returning a fit score and a short, explainable reason. **Recruiter-aware memory** persists contact metadata so repeat runs stay incremental rather than starting from zero. **Operational dashboards** surface ranked outputs in Streamlit and summarized pipeline logs for live run monitoring.
 
 ---
 
 ## AI Scoring Pipeline
 
-AI evaluation runs in **batches** (default batch size: 10) against the external candidate profile [`config/profiles/ai_candidate_profile.example.md`](config/profiles/ai_candidate_profile.example.md) (override: `AI_CANDIDATE_PROFILE_PATH` for a private resume profile). Scoring rules and JSON format live in [`src/agent/ai_batch_scorer.py`](src/agent/ai_batch_scorer.py); see [config/profiles/README.md](config/profiles/README.md).
+AI evaluation runs in **batches** (default batch size: 15) against the external candidate profile [`config/profiles/ai_candidate_profile.example.md`](config/profiles/ai_candidate_profile.example.md) (override: `AI_CANDIDATE_PROFILE_PATH` for a private resume profile). Scoring rules and JSON format live in [`src/agent/ai_batch_scorer.py`](src/agent/ai_batch_scorer.py); see [config/profiles/README.md](config/profiles/README.md).
 
 **What the model evaluates:**
 
@@ -258,11 +271,13 @@ When sources expose hiring contact metadata (especially **Instahyre** detail pag
 
 - Extracts recruiter name, title, company, and profile link  
 - Maps `hiring_manager` for downstream ranking and CRM  
-- Syncs **`recruiter_crm.csv`** with mutation-aware updates (only logs CRM changes when data actually changes)
+- Persists recruiter records in **SQLite** (`recruiters` table) with mutation-aware updates; optional **`recruiter_crm.csv`** export when enabled
 
 This supports a **relationship-centric** view of the job market - not just listings, but who is behind them.
 
-> _Placeholder: recruiter CRM table screenshot or sample row schema._
+<p align="center">
+  <img src="./diagrams/dashboard-crm.png" alt="Recruiter Relationship Manager in the Streamlit dashboard" width="720" />
+</p>
 
 ---
 
@@ -308,7 +323,7 @@ Runtime artifacts (`logs/`, `__pycache__/`, query state files) are gitignored an
 5. **Open dashboard** - `streamlit run dashboard/app.py` (reads `current_jobs_view` / CRM from DB).  
 6. **Iterate** - Adjust query catalogs, feeds, or [profile markdown](config/profiles/ai_candidate_profile.example.md); re-run incrementally.  
 
-Daily steps: [docs/PRODUCTION_OPERATIONS.md](docs/PRODUCTION_OPERATIONS.md). System overview: [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md).
+**Canonical daily and reset procedures:** [docs/PRODUCTION_OPERATIONS.md](docs/PRODUCTION_OPERATIONS.md). System overview: [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md).
 
 **Example: LinkedIn-only validation run**
 
@@ -347,6 +362,7 @@ autonomous-career-intelligence-platform/
 ├── data/                   # SQLite DB, runtime CSV + auth (gitignored)
 ├── diagrams/               # Architecture and pipeline visuals
 ├── scripts/                # Archive, reset, validation helpers
+│   └── scheduling/         # Optional launchd wrappers + plist templates (macOS)
 ├── archive/                # Point-in-time state snapshots
 └── docs/                   # PRODUCT_STATUS_SUMMARY, PRODUCTION_OPERATIONS, PCR, SQLite plans
 ```
@@ -410,7 +426,11 @@ python main.py
 streamlit run dashboard/app.py
 ```
 
-### 6. Optional debug modes
+### 6. Production scheduling (macOS, optional)
+
+For automated twice-daily acquisition (07:00 and 19:00), install user LaunchAgents using the wrappers and plist templates under `scripts/scheduling/`. Requires a repo `.env` with `OPENAI_API_KEY` and a logged-in macOS session for Playwright auth.
+
+### 7. Optional debug modes
 
 ```bash
 DEBUG_STAGE1=true DEBUG_LINKEDIN=true DEBUG_INSTAHYRE=true \
@@ -419,7 +439,7 @@ DEBUG_IDENTITY=true DEBUG_AI=true python main.py
 
 ### Utility scripts
 
-- `scripts/reset_state.sh` - Reset CSV state from templates  
+- `scripts/reset_state.sh` - Reset runtime state (SQLite + CSV templates per bootstrap profile)  
 - `scripts/archive_state.sh` - Snapshot current state to `archive/`  
 - `scripts/validate_bootstrap.py` - Validate schema after reset  
 

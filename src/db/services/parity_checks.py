@@ -536,7 +536,14 @@ def check_production_cumulative_health(
     session: Session,
     historical: pd.DataFrame,
 ) -> ParitySections:
-    """DB-only cumulative health; optional historical CSV key cross-check when populated."""
+    """
+    DB-first cumulative health for production mode.
+
+    Strict in-DB checks always apply. Historical CSV key cross-check is strict only when
+    SQLITE_EXPORT_HISTORICAL_CSV=1; otherwise stale optional-export rows are warnings.
+    """
+    from db.write.engine import export_historical_csv_enabled
+
     out = ParitySections()
     hist_keys = v2_keys(historical)
     db_job_keys = {
@@ -549,10 +556,17 @@ def check_production_cumulative_health(
         if missing_in_db:
             preview = ", ".join(missing_in_db[:8])
             suffix = "..." if len(missing_in_db) > 8 else ""
-            out.failures.append(
-                f"historical JOB_KEY_V2 missing in DB jobs ({len(missing_in_db)}): "
+            msg = (
+                f"historical JOB_KEY_V2 in CSV not in DB jobs ({len(missing_in_db)}): "
                 f"{preview}{suffix}"
             )
+            if export_historical_csv_enabled():
+                out.failures.append(msg)
+            else:
+                out.warnings.append(
+                    f"{msg} (optional historical_jobs.csv artifact; "
+                    "SQLITE_EXPORT_HISTORICAL_CSV=0; SQLite authoritative)"
+                )
 
     jobs_without_eval = session.execute(
         select(func.count())

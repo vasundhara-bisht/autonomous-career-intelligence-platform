@@ -15,6 +15,14 @@ from db.config import database_url, sqlite_flags_summary
 from db.engine import get_engine
 from db.models import Base
 
+# Skip redundant Alembic upgrade runs within a process (e.g. Streamlit reruns).
+_BOOTSTRAP_DONE: set[tuple[str, str]] = set()
+
+
+def _reset_bootstrap_guard() -> None:
+    """Clear process-level bootstrap cache (tests only)."""
+    _BOOTSTRAP_DONE.clear()
+
 
 def repo_root() -> Path:
     return paths.REPO_ROOT
@@ -56,7 +64,11 @@ def upgrade_schema(*, revision: str = "head") -> str:
 def ensure_database_ready(*, revision: str = "head") -> Path:
     """Create DB file if needed and migrate schema."""
     db_path = ensure_database_file()
+    bootstrap_key = (str(db_path.resolve()), revision)
+    if bootstrap_key in _BOOTSTRAP_DONE:
+        return db_path
     upgrade_schema(revision=revision)
+    _BOOTSTRAP_DONE.add(bootstrap_key)
     return db_path
 
 

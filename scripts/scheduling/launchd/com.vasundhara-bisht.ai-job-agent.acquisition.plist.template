@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.vasundhara-bisht.ai-job-agent.acquisition</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>@REPO_ROOT@/scripts/scheduling/run_scheduled_acquisition.sh</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>@REPO_ROOT@</string>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StartCalendarInterval</key>
+	<array>
+		<dict>
+			<key>Hour</key>
+			<integer>7</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>Hour</key>
+			<integer>19</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+	</array>
+	<key>StandardOutPath</key>
+	<string>@REPO_ROOT@/logs/scheduled/launchd-acquisition.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>@REPO_ROOT@/logs/scheduled/launchd-acquisition.stderr.log</string>
+</dict>
+</plist>
