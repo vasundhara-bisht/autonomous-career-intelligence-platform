@@ -319,6 +319,8 @@ Once SQLite is active, CSVs should be regenerable from the database.
 | `query_cooldown_state` | Current query cooldown/orchestration state | Yes for orchestration |
 | `reset_events` | Reset profile, archive ID, resources affected | Yes for reset audit |
 
+**Run provenance:** Production may trigger the pipeline manually (`python main.py`) or via macOS launchd ([SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md)). Both paths use the same dual-write and SQLite gates; the scheduler is external orchestration only.
+
 ### Recommended Views
 
 | View | Purpose |
@@ -372,7 +374,9 @@ Dual-write remains **on by default** (`SQLITE_DUAL_WRITE=1`). SQLite is authorit
 Historical rollout approach (completed):
 
 1. SQLite writes at end of `main.py` persistence cohort.
-2. Validators after each run (`validate_sqlite_parity.py --mode production`; SOT after export).
+2. Validators after each run:
+   - **`--mode production`** (scheduler + daily ops): strict on SQLite and this-run `jobs.csv` cohort; stale optional `historical_jobs.csv` rows warn when `SQLITE_EXPORT_HISTORICAL_CSV=0` (default).
+   - **`--mode source-of-truth`**: strict bidirectional CSV export parity after `export_csv_memory.py`.
 3. Dashboard promoted to SQLite reads/writes (D6/D8B).
 4. CSV mirrors refreshed via `export_csv_memory.py --all` when needed for SOT or handoff.
 

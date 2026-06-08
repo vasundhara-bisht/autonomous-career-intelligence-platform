@@ -517,7 +517,7 @@ Extend existing profile-driven reset (`scripts/reset_runtime.py`) to truncate SQ
 - **D3 / Plan A (Checkpoint H): COMPLETE** (2026-06-03)
   - **3/3 consecutive clean DB-export runs:** acquisition runs **11, 12, 13** (run 10 failed — Playwright missing in agent env; legacy export fallback; does not count).
   - Each pass run: `jobs.csv export_mode=db_current_jobs_view`, dual-write `success=1`, zero export-time metadata WARNs, `validate_dual_write_parity.py --fail-on-error` PASS (including D2 METADATA PARITY).
-  - Evidence logs: `logs/checkpoint-h-run-10-retry-20260603-014516.log` (run 11), `logs/checkpoint-h-run-11-20260603-015318.log` (run 12), `logs/checkpoint-h-run-12-20260603-020717.log` (run 13), `logs/checkpoint-h-metadata-hard-parity-20260603-024035.log` (run 14 hard-parity trial).
+  - Evidence logs: operator-local log (run 11), operator-local log (run 12), operator-local log (run 13), operator-local log (run 14 hard-parity trial).
   - Optional: `SQLITE_METADATA_HARD_PARITY=1` trial run 14 — DB export PASS (no hard parity fallback).
   - Optional: `scripts/backfill_observation_query_runs.py --dry-run` on run 13 — `updated=0 skipped=36` (forward-only cohort already linked).
   - `SQLITE_METADATA_HARD_PARITY=1` remains opt-in (default WARN-only).

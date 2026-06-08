@@ -8,12 +8,19 @@ Built for product-minded operators who want **signal over noise** - with transpa
 
 ## Documentation
 
+Primary documentation index — start here.
+
 | Doc | Purpose |
 |-----|---------|
 | [docs/CLONE_SETUP.md](docs/CLONE_SETUP.md) | **Fresh clone** — install, `.env`, first run |
-| [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md) | Milestones, architecture, SOT, roadmap |
-| [docs/PRODUCTION_OPERATIONS.md](docs/PRODUCTION_OPERATIONS.md) | Daily workflow + pre-production reset |
+| [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md) | **Status snapshot** — capability maturity, limitations, milestones; architecture diagrams in this README; live procedures in PRODUCTION_OPERATIONS |
+| [docs/REPOSITORY_MAP.md](docs/REPOSITORY_MAP.md) | **Codebase navigation** — structure, data flow, subsystem map, entry points |
+| [docs/SCHEDULER_SETUP.md](docs/SCHEDULER_SETUP.md) | **Optional scheduling** — macOS launchd install, 07:00 / 19:00, logs, uninstall |
+| [docs/PRODUCTION_OPERATIONS.md](docs/PRODUCTION_OPERATIONS.md) | **Operator procedures** — daily workflow + pre-production reset |
 | [docs/PROJECT_COMMAND_REFERENCE.md](docs/PROJECT_COMMAND_REFERENCE.md) §10b | Commands, flags, troubleshooting |
+| [docs/SQLITE_IMPLEMENTATION_PLAN.md](docs/SQLITE_IMPLEMENTATION_PLAN.md) | D0–D8B migration history and rollback reference |
+| [docs/SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md](docs/SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md) | SQLite data model and product memory design |
+| [docs/PUBLIC_REPO.md](docs/PUBLIC_REPO.md) | Portfolio-safe publishing checklist |
 | [config/profiles/README.md](config/profiles/README.md) | AI candidate profile editing |
 
 ---

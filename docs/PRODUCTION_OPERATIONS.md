@@ -1,10 +1,12 @@
 # Production Operations
 
-Step-by-step operator guide for **daily use** and **pre-production reset** after D8B SQLite promotion.
+Step-by-step operator guide for **daily use** and **pre-production reset** after D8B SQLite promotion. **Canonical source** for live operator procedures (reset §2, daily workflow §3).
 
 **System overview (milestones, architecture, roadmap):** [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md)  
+**Codebase navigation:** [REPOSITORY_MAP.md](./REPOSITORY_MAP.md)  
 **Command catalog and flags:** [PROJECT_COMMAND_REFERENCE.md](./PROJECT_COMMAND_REFERENCE.md) §10b  
-**Migration history:** [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md)
+**Migration history:** [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md)  
+**Production scheduling (macOS, optional):** [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md)
 
 ---
 
@@ -116,13 +118,28 @@ Optional: `python -m unittest tests.test_dashboard_loaders -q`
 
 ## 3. Daily production workflow
 
-Intended cadence: **scheduled or twice-daily** acquisition + dashboard review (configure scheduling outside the repo, e.g. cron or LaunchAgent).
+Intended cadence: **twice-daily automated acquisition** (07:00 and 19:00 local) + **manual** Streamlit dashboard review. Scheduling is implemented via macOS `launchd` — see [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md). Other schedulers can invoke the same wrapper script (`scripts/scheduling/run_scheduled_acquisition.sh`).
+
+### 3.0 Scheduled automation (macOS)
+
+**Cadence:** acquisition + parity at **07:00** and **19:00** daily (local); optional backup Sunday **23:00**. Overlapping runs skip when the file lock is held (`/tmp/ai-job-agent-acquisition.lock`).
+
+**Install, plist labels, log paths, manual test, uninstall:** [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md) (canonical).
+
+**Not scheduled:** Streamlit — use §3.4 manually.
+
+Manual acquisition (§3.2–3.3) is equivalent when LaunchAgents are not installed.
 
 ### 3.1 Before acquisition
 
+**Scheduled runs:** wrapper loads `.env` (including `OPENAI_API_KEY`), sets `LINKEDIN_MAX_RUNS=3`, and default `AI_CANDIDATE_PROFILE_PATH`; see [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md).
+
+**Manual runs:**
+
 - Activate venv: `source venv/bin/activate`
 - `export OPENAI_API_KEY="..."`
-- Edit scoring identity if needed: [`config/profiles/ai_candidate_profile.example.md`](../config/profiles/ai_candidate_profile.example.md) or your path via `AI_CANDIDATE_PROFILE_PATH` (see [config/profiles/README.md](../config/profiles/README.md))
+- LinkedIn cap: `LINKEDIN_MAX_RUNS=3` (or omit for code default of 5)
+- Edit scoring identity if needed: [`config/profiles/ai_candidate_profile.example.md`](../config/profiles/ai_candidate_profile.example.md) (see [config/profiles/README.md](../config/profiles/README.md))
 - Optional: `DEBUG_LIMIT=300` (default in code; override via env)
 - LinkedIn Top Applicant anchor: `unset LINKEDIN_QUALIFICATION_LANDING_URL` so [`config/linkedin_queries.json`](../config/linkedin_queries.json) `top_applicants_anchor.landing_url` is used (refresh that URL when the feed drifts)
 
@@ -143,11 +160,15 @@ python main.py
 
 ### 3.3 Post-run validation
 
+Scheduled runs already run this step in the acquisition wrapper. For **manual** runs:
+
 ```bash
 python scripts/validate_sqlite_parity.py --mode production --fail-on-error
 ```
 
 Validates SQLite health and D2 `jobs.csv` cohort parity. Does **not** require populated historical/CRM CSV mirrors (those are optional exports).
+
+Under default flags (`SQLITE_EXPORT_HISTORICAL_CSV=0`), **stale rows** in `historical_jobs.csv` that are not in SQLite produce a **warning only**, not a failure. Strict historical CSV↔DB key parity applies when `SQLITE_EXPORT_HISTORICAL_CSV=1` or when using `--mode source-of-truth` after `export_csv_memory.py`.
 
 Legacy strict CSV mirror check (optional): `python scripts/validate_sqlite_parity.py --mode csv-mirror-sync` or deprecated `validate_dual_write_parity.py` (after `export_csv_memory.py --all`).
 
@@ -161,11 +182,15 @@ Review ranked jobs, historical memory, recruiter CRM, pipeline stages.
 
 ### 3.5 Periodic backup (weekly or before risky changes)
 
+Manual commands:
+
 ```bash
 ./scripts/archive_state.sh
 python scripts/export_csv_memory.py --all
 python scripts/validate_sqlite_parity.py --mode source-of-truth --fail-on-error
 ```
+
+Optional automation: `scripts/scheduling/run_scheduled_backup.sh` via LaunchAgent (Sunday 23:00) — [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md).
 
 ---
 

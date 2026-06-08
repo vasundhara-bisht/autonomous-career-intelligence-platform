@@ -3,8 +3,10 @@
 PM-friendly cheat sheet for running, debugging, and operating **ai-job-agent**.  
 All commands assume you are in the **repository root** unless noted otherwise.
 
-**Runtime data lives in:** `data/` (CSVs, auth JSON, LinkedIn query state)  
+**Runtime data lives in:** `data/` — primary store `data/ai_job_agent.db` (SQLite SOT, D8B); optional CSV exports; auth JSON and LinkedIn query state files (never in DB).  
 **Config catalogs live in:** `config/` (no secrets)
+
+SQLite flags and rituals: **§10b** (canonical). Step-by-step operator procedures: [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md).
 
 ---
 
@@ -383,12 +385,30 @@ python -c "from agent.dedup_engine import deduplicate_jobs; deduplicate_jobs([..
 
 Set `DEBUG_IDENTITY=true` on a pipeline run for per-job description reuse logs (`reuse_via=v2` / `legacy`).
 
+### Scheduling scripts (`scripts/scheduling/`)
+
+| Script | Command | What it does | When to use | Safety |
+|--------|---------|--------------|-------------|--------|
+| Scheduled acquisition | `./scripts/scheduling/run_scheduled_acquisition.sh` | `with_file_lock.py` → `main.py` → production parity | 07:00 / 19:00 via LaunchAgent or manual test | Safe |
+| Scheduled backup | `./scripts/scheduling/run_scheduled_backup.sh` | Archive + CSV export + SOT parity | Sunday 23:00 optional LaunchAgent | Safe (writes archive) |
+| Install LaunchAgents | `./scripts/scheduling/install_launchagents.sh` | Renders plists → `~/Library/LaunchAgents`, `launchctl bootstrap` | One-time setup | Safe |
+| Install + backup | `./scripts/scheduling/install_launchagents.sh --with-backup` | Same + weekly backup agent | Optional | Safe |
+
+Manual test acquisition:
+
+```bash
+./scripts/scheduling/run_scheduled_acquisition.sh
+launchctl kickstart -k "gui/$(id -u)/com.vasundhara-bisht.ai-job-agent.acquisition"
+```
+
+Lock helper: `scripts/scheduling/with_file_lock.py`. Lock files: `/tmp/ai-job-agent-acquisition.lock`, `/tmp/ai-job-agent-backup.lock`. Scheduled wrapper sets `LINKEDIN_MAX_RUNS=3` before `main.py`. Full install: [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md).
+
 ---
 
 ## 10b. SQLite product memory (source of truth) {#sqlite-product-memory-source-of-truth}
 
 **System status (milestones, limitations, roadmap):** [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md)  
-**Daily ops and pre-reset:** [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md)
+**Daily ops, scheduling, and pre-reset:** [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md), [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md)
 
 **Canonical operator reference for SQLite.** As of D8B (2026-06-03), **`data/ai_job_agent.db` is the default source of truth** for product memory. CSV files under `data/` are optional exports for backup, handoff, and recovery — not the daily read path.
 
@@ -598,6 +618,8 @@ See `docs/PUBLIC_REPO.md`. Quick checks:
 
 ## 12. Operational workflows (cheat sheet)
 
+Step-by-step operator rituals (reset, daily cadence): [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md). This section is **command-oriented**; use it alongside §10b for flags and parity modes.
+
 ### A. First-time developer setup
 
 ```bash
@@ -612,6 +634,16 @@ Then create auth files via scraper login flows → run `python main.py` → `str
 
 ### B. Daily refresh
 
+**Scheduled (production):** LaunchAgents at 07:00 and 19:00 run `run_scheduled_acquisition.sh` (acquisition + parity). Review when convenient:
+
+```bash
+streamlit run dashboard/app.py
+```
+
+Install and logs: [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md).
+
+**Manual:**
+
 ```bash
 source venv/bin/activate
 export OPENAI_API_KEY="..."
@@ -620,7 +652,7 @@ python scripts/validate_sqlite_parity.py --mode production --fail-on-error
 streamlit run dashboard/app.py
 ```
 
-Profile edits: [`config/profiles/ai_candidate_profile.example.md`](../config/profiles/ai_candidate_profile.example.md) (or `AI_CANDIDATE_PROFILE_PATH`) before run. Full cadence: [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md) §3.
+Profile edits: [`config/profiles/ai_candidate_profile.example.md`](../config/profiles/ai_candidate_profile.example.md) before run. Full cadence: [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md) §3.
 
 ### C. Cheap validation run (minimal scrape)
 
@@ -695,6 +727,8 @@ python scripts/validate_sqlite_parity.py --mode production --fail-on-error
 | Import parity +1 scored | SQLite orphan not in historical — `cleanup_sqlite_orphan_job.py` or re-import after CSV fix |
 | `job_descriptions` count mismatch | Description row in CSV without historical parent — prune CSV row (§10b) |
 | Dashboard shows stale CSV | `SQLITE_READ=0` or `SQLITE_ENABLED=0` set — remove overrides or export from DB |
+| Scheduled run skipped immediately | Prior run still holding lock (`SKIP: another acquisition holds`) — wait or inspect long `main.py`. If log shows `/usr/bin/flock: No such file`, upgrade scheduler scripts (use `with_file_lock.py`). |
+| Parity fails after scheduled run on empty DB | Run one successful `main.py` before `--fail-on-error` is meaningful |
 
 ---
 
