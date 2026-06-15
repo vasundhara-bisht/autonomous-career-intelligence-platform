@@ -6,7 +6,7 @@ Step-by-step operator guide for **daily use** and **pre-production reset** after
 **Codebase navigation:** [REPOSITORY_MAP.md](./REPOSITORY_MAP.md)  
 **Command catalog and flags:** [PROJECT_COMMAND_REFERENCE.md](./PROJECT_COMMAND_REFERENCE.md) §10b  
 **Migration history:** [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md)  
-**Production scheduling (macOS, optional):** [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md)
+**Production scheduling (macOS):** [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md)
 
 ---
 
@@ -112,17 +112,63 @@ streamlit run dashboard/app.py
 
 Default D8B: SQLite read/write on. Confirm sidebar indicates SQLite data source; edit a pipeline stage and CRM field; refresh — changes persist in DB.
 
-Optional: `python -m unittest tests.test_dashboard_loaders -q`
+**Dashboard verification checklist:**
+
+1. Header shows **Last acquisition refresh** with a formatted timestamp.
+2. KPI row: **Total Jobs**, **Latest Acquisition**, **Total Recruiters** — Total Jobs matches visible cohort (active + user-managed stages).
+3. **Job Search Progression** section shows Discovery → Application → Outcomes stage cards.
+4. Change sidebar **Location** or **Status** — Job Listings row count changes; Job Search Progression and Source Distribution **unchanged**.
+5. Raise **Minimum score** — low/unscored `New` jobs disappear from table; Applied+ stages remain; progression counts unchanged.
+6. **Showing X of Y** — X changes with filters; Y (dashboard cohort size) stays constant.
+7. **Recommended Actions** — four panels in a **2×2 grid**: High Confidence, Apply Today, Apply This Week, Needs Review; queue counts **unchanged** when sidebar Location/Status filters change.
+8. **Open Job** / **Applied ✓** / **Why?** — Open Job opens posting URL when link present (primary action); **Applied ✓** (Phase 3A.1) on High Confidence, Apply Today, and Apply This Week cards marks job Applied and removes it from apply queues on rerun; Needs Review cards show Open Job + Why? only; Why? popover shows full AI rationale.
+9. Scrollable queue panels render (Streamlit ≥ 1.30); per-queue initial caps **8 / 10 / 12 / 10**; **Load More** adds 25 when `visible < total`; caption **Showing X of Y jobs** (caption left, Load More right); panel height shrinks for small queues (dynamic height, max 360px).
+10. **Needs Review help icon** — info icon beside header shows tooltip (`14+ days old • Decide or clear`); **Job Listings** section title has HM enrichment help icon; sidebar **Source** filter and Source Distribution chart show human-readable source labels (LinkedIn, InstaHyre, etc.).
+11. **Applied ✓ smoke (3A.1)** — With `SQLITE_DASHBOARD_WRITE=1`, click Applied ✓ on a High Confidence or Apply Today card; toast appears; job disappears from that queue; apply-queue count decrements; same job shows **Applied** in Job Listings. With writes off, Applied ✓ is disabled.
+
+**Unit test smoke:**
+
+```bash
+python -m unittest \
+  tests.test_dashboard_loaders \
+  tests.test_dashboard_visibility \
+  tests.test_dashboard_data_flow \
+  tests.test_dashboard_funnel \
+  tests.test_dashboard_funnel_workflow \
+  tests.test_recommended_actions \
+  tests.test_recommended_actions_applied \
+  tests.test_display_text \
+  tests.test_source_display \
+  tests.test_dashboard_refresh_label \
+  -v
+```
+
+### 2.9 Hiring Manager enrichment smoke (Phase 3B)
+
+Requires `SQLITE_DASHBOARD_WRITE=1` (default under D8B). Confirm sidebar shows SQLite connected without write-disabled info banner on Job Listings.
+
+1. Pick a job with **Hiring Manager** = `Not Specified` (or note current value).
+2. Edit Hiring Manager to a valid name (e.g. recruiter full name); wait for save toast and rerun.
+3. **Job Listings** row shows the new Hiring Manager.
+4. **Recruiter CRM** — new or updated recruiter row; `source` = `job_editor` for newly created rows; `jobs_connected` ≥ 1.
+5. Change Hiring Manager **A → B** on the same job — job row shows B; recruiter A remains in CRM with link history (append-only).
+6. Clear to empty or `unknown` — job shows `Not Specified`; prior recruiter links **unchanged**.
+
+**Unit test smoke:**
+
+```bash
+python -m unittest tests.test_recruiter_enrichment tests.test_dashboard_job_hiring_manager -v
+```
 
 ---
 
 ## 3. Daily production workflow
 
-Intended cadence: **twice-daily automated acquisition** (07:00 and 19:00 local) + **manual** Streamlit dashboard review. Scheduling is implemented via macOS `launchd` — see [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md). Other schedulers can invoke the same wrapper script (`scripts/scheduling/run_scheduled_acquisition.sh`).
+Intended cadence: **twice-daily automated acquisition** (10:00 and 21:00 IST) + **manual** Streamlit dashboard review. Scheduling is implemented via macOS `launchd` — see [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md). Other schedulers can invoke the same wrapper script (`scripts/scheduling/run_scheduled_acquisition.sh`).
 
 ### 3.0 Scheduled automation (macOS)
 
-**Cadence:** acquisition + parity at **07:00** and **19:00** daily (local); optional backup Sunday **23:00**. Overlapping runs skip when the file lock is held (`/tmp/ai-job-agent-acquisition.lock`).
+**Cadence:** acquisition + parity at **10:00** and **21:00** IST daily; optional backup Sunday **23:00**. Overlapping runs skip when the file lock is held (`/tmp/ai-job-agent-acquisition.lock`).
 
 **Install, plist labels, log paths, manual test, uninstall:** [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md) (canonical).
 
@@ -157,6 +203,7 @@ python main.py
 - Write-primary banner (if enabled)
 - Dual-write `success=1`
 - Candidate profile path logged at AI stage
+- When Instahyre enabled (`INSTAHYRE_MAX_RUNS` ≠ 0): `🟣 INSTAHYRE INTERESTED SYNC SUMMARY` — note `protected_count` (stages preserved), `not_required_evals_written`, `sync_run_id`
 
 ### 3.3 Post-run validation
 
@@ -178,7 +225,16 @@ Legacy strict CSV mirror check (optional): `python scripts/validate_sqlite_parit
 streamlit run dashboard/app.py
 ```
 
-Review ranked jobs, historical memory, recruiter CRM, pipeline stages.
+Review ranked jobs, historical memory, recruiter CRM, pipeline stages, Job Search Progression, four-queue Recommended Actions (Applied ✓ on apply queues), and source distribution. Use the dashboard verification checklist in §2.8.
+
+**Interested sync + routing unit tests** (optional, after Instahyre runs):
+
+```bash
+python -m unittest \
+  tests.test_instahyre_interested_sync \
+  tests.test_pipeline_user_managed_routing \
+  -v
+```
 
 ### 3.5 Periodic backup (weekly or before risky changes)
 
@@ -203,7 +259,7 @@ Optional automation: `scripts/scheduling/run_scheduled_backup.sh` via LaunchAgen
 | **L2** | Git revert D8B default-flag commit |
 | **L3** | Archive → bootstrap reset → import from archive |
 
-See [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md) §15 rollback procedures.
+Rollback levels aligned with [D8B_PROMOTION_SIGNOFF.md](./D8B_PROMOTION_SIGNOFF.md) evidence archive; live procedure: this section + §2.
 
 ---
 
@@ -220,6 +276,14 @@ See [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md) §15 rollba
 
 ---
 
-## 6. Clone setup pointer
+## 6. Evidence and sign-off logs
 
-Fresh public clones: [CLONE_SETUP.md](./CLONE_SETUP.md). D8A/D8B promotion validation was completed during migration; detailed operator logs are not part of this repository.
+Read-only references for promotion validation:
+
+| Artifact | Path |
+|----------|------|
+| D8A readiness | `logs/d8a-promotion-readiness-20260603.md` |
+| D8B post-flip run | `logs/d8b-post-flip-run-20260603-134740.log` |
+| D8B SOT validator | `logs/d8b-post-flip-sot-20260603-134753.log` |
+| Flag remediation | `logs/d8b-remediation-post-flip-run-20260603-142154.log` |
+| D8B sign-off | [D8B_PROMOTION_SIGNOFF.md](./D8B_PROMOTION_SIGNOFF.md) |

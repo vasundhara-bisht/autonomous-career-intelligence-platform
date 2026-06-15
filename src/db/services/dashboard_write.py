@@ -14,6 +14,10 @@ from db.bootstrap import ensure_database_ready
 from db.engine import get_session
 from db.models.schema import Job, Recruiter, UserJobState
 from db.read.engine import dashboard_write_enabled
+from db.services.recruiter_enrichment import (
+    normalize_hiring_manager,
+    sync_recruiter_from_hiring_manager,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -109,6 +113,36 @@ def upsert_user_job_state_batch(updates: list[dict[str, Any]]) -> int:
     return count
 
 
+def mark_job_applied(*, job_key_v2: str = "", job_key: str = "") -> bool:
+    """Set a single job to Applied from Recommended Actions (Phase 3A.1)."""
+    if not dashboard_write_enabled():
+        return False
+    ensure_database_ready()
+    with get_session() as session:
+        assert isinstance(session, Session)
+        job_id = _resolve_job_id(session, job_key_v2=job_key_v2, job_key=job_key)
+        if job_id is None:
+            return False
+        existing = session.get(UserJobState, job_id)
+        notes = str(existing.notes or "").strip() if existing is not None else ""
+        ok = upsert_user_job_state_from_editor(
+            session,
+            job_key_v2=job_key_v2,
+            job_key=job_key,
+            applied=True,
+            rejected=False,
+            interview=False,
+            offer=False,
+            notes=notes,
+            pipeline_stage="Applied",
+        )
+        if not ok:
+            return False
+        session.commit()
+    _maybe_sync_csv_exports(historical=True, crm=False)
+    return True
+
+
 def update_recruiter_from_editor(
     session: Session,
     *,
@@ -165,13 +199,95 @@ def _maybe_sync_csv_exports(*, historical: bool, crm: bool) -> None:
         _log.exception("Post-dashboard CSV export sync failed")
 
 
-def persist_dashboard_job_edits(updated_df: pd.DataFrame) -> int:
-    """Write job pipeline editor state to user_job_state when flag enabled."""
+def _prior_hiring_manager_by_job_key(prior_df: pd.DataFrame) -> dict[str, str]:
+    """Map JOB_KEY_V2 (or JOB_KEY) to prior Hiring Manager display value."""
+    if prior_df.empty:
+        return {}
+    hm_col = "Hiring Manager" if "Hiring Manager" in prior_df.columns else "hiring_manager"
+    if hm_col not in prior_df.columns:
+        return {}
+
+    out: dict[str, str] = {}
+    for _, row in prior_df.iterrows():
+        key = str(row.get("JOB_KEY_V2") or row.get("JOB_KEY") or "").strip()
+        if not key:
+            continue
+        out[key] = normalize_hiring_manager(row.get(hm_col))
+    return out
+
+
+def _row_lookup_key(row: dict[str, Any]) -> str:
+    return str(row.get("JOB_KEY_V2") or row.get("JOB_KEY") or "").strip()
+
+
+def persist_dashboard_job_edits(
+    updated_df: pd.DataFrame,
+    *,
+    prior_df: pd.DataFrame | None = None,
+) -> int:
+    """Write job editor state and optional Hiring Manager enrichment to SQLite."""
     if not dashboard_write_enabled():
         return 0
     rows = updated_df.to_dict(orient="records")
-    count = upsert_user_job_state_batch(rows)
-    _maybe_sync_csv_exports(historical=True, crm=False)
+    if not rows:
+        return 0
+
+    prior_hm = _prior_hiring_manager_by_job_key(prior_df) if prior_df is not None else {}
+
+    ensure_database_ready()
+    count = 0
+    recruiter_touched = False
+    with get_session() as session:
+        assert isinstance(session, Session)
+        for row in rows:
+            if upsert_user_job_state_from_editor(
+                session,
+                job_key_v2=str(row.get("JOB_KEY_V2", "") or ""),
+                job_key=str(row.get("JOB_KEY", "") or ""),
+                applied=_as_bool(row.get("applied")),
+                rejected=_as_bool(row.get("rejected")),
+                interview=_as_bool(row.get("interview")),
+                offer=_as_bool(row.get("offer")),
+                notes=str(row.get("notes", "") or ""),
+                pipeline_stage=str(row.get("pipeline_stage", "New") or "New"),
+            ):
+                count += 1
+
+            if prior_df is None or "hiring_manager" not in row:
+                continue
+
+            lookup = _row_lookup_key(row)
+            if not lookup:
+                continue
+
+            new_hm = normalize_hiring_manager(row.get("hiring_manager"))
+            old_hm = prior_hm.get(lookup)
+            if old_hm is None:
+                continue
+            if new_hm == old_hm:
+                continue
+
+            job_id = _resolve_job_id(
+                session,
+                job_key_v2=str(row.get("JOB_KEY_V2", "") or ""),
+                job_key=str(row.get("JOB_KEY", "") or ""),
+            )
+            if job_id is None:
+                continue
+
+            result = sync_recruiter_from_hiring_manager(
+                session,
+                job_id=job_id,
+                hiring_manager=str(row.get("hiring_manager", "") or ""),
+                company=str(row.get("company", "") or ""),
+                job_source=str(row.get("source", "") or ""),
+            )
+            if result.outcome != "skipped":
+                recruiter_touched = True
+
+        session.commit()
+
+    _maybe_sync_csv_exports(historical=True, crm=recruiter_touched)
     return count
 
 

@@ -78,7 +78,7 @@ Controlled in `scraper/acquisition_gate.py` and `src/agent/main.py`.
 | Variable | Default if unset | `0` | Positive number `N` | Invalid value |
 |----------|------------------|-----|------------------------|---------------|
 | `LINKEDIN_MAX_RUNS` | 5 queries | Disables LinkedIn | Caps orchestrated queries to N | Falls back to default |
-| `INSTAHYRE_MAX_RUNS` | 2 feeds | Disables Instahyre | Caps feeds to N | Falls back to default |
+| `INSTAHYRE_MAX_RUNS` | 2 feeds | Disables Instahyre **feed acquisition and Interested sync** | Caps feeds to N; when non-zero, also runs post-feed Interested sync (see §5) | Falls back to default |
 | `GREENHOUSE_MAX_RUNS` | 1 run | Disables Greenhouse | Caps to N | Falls back to default |
 | `LEVER_MAX_RUNS` | 1 run | Disables Lever | Caps to N | Falls back to default |
 | `WEWORKREMOTELY_MAX_RUNS` | 1 run | Disables WeWorkRemotely | Caps to N | Falls back to default |
@@ -117,7 +117,7 @@ The default priority anchor (`top_applicants_anchor`) uses `url_mode: qualificat
 2. Update `landing_url` on query `top_applicants_anchor` in `config/linkedin_queries.json`, **or** set `LINKEDIN_QUALIFICATION_LANDING_URL` for a one-off run.
 3. Before production runs using the JSON URL, **`unset LINKEDIN_QUALIFICATION_LANDING_URL`** so the env does not override config.
 
-Portfolio placeholder `landing_url` on `top_applicants_anchor`: `currentJobId=PLACEHOLDER_JOB_001`, `originToLandingJobPostings=PLACEHOLDER_JOB_001,PLACEHOLDER_JOB_002,PLACEHOLDER_JOB_003` (see `config/linkedin_queries.json`). Replace with your live LinkedIn URL locally.
+Canonical anchor `landing_url` (2026-06): `currentJobId=PLACEHOLDER_JOB_001`, `originToLandingJobPostings=PLACEHOLDER_JOB_001,PLACEHOLDER_JOB_002,PLACEHOLDER_JOB_003`.
 
 **LinkedIn-only anchor validation** (requires `data/linkedin_auth.json`):
 
@@ -173,6 +173,52 @@ Expect: `[PRIORITY_ANCHOR] top_applicants_anchor`, then `[PRIORITY_FOLLOWUP] bro
 Feed 1 (`matching_personalized`) and Feed 2 (`pm_curated_search` → `/search-jobs`) default to **pagination traversal** (harvest all pages, then detail extraction). Debug metrics: `pages_traversed`, `cards_per_page`, `cumulative_unique_job_ids`, `pagination_stop_reason`, `final_unique_instahyre_jobs`, `page_traversal_details`.
 
 With `INSTAHYRE_MATCHING_SCROLL_FALLBACK=1`, Feed 1 uses the scroll strategy chain (`container_scroll` → … → `document_wheel_last_resort`). Metrics: `strategy_fallback_chains`, `ineffective_scroll_cycles`, `scroll_strategy_used`.
+
+### Instahyre Interested Sync (code Phase B — not CSV importer Phase B)
+
+When `INSTAHYRE_MAX_RUNS` is not `0`, after feed acquisition `main.py` runs **Instahyre Interested synchronization** in a separate try/except block. If feed acquisition fails, Interested sync may still run in the same Instahyre block. When `INSTAHYRE_MAX_RUNS=0`, the entire Instahyre block (feeds **and** Interested sync) is skipped.
+
+**Business rule:** membership in Instahyre's Interested filter (`/candidate/opportunities/?matching=true&status=1`) means the job is **Applied** — stubs set `applied=True`; persist promotes `""` / `New` → `Applied` when incoming is applied.
+
+**Harvest (list-only):**
+- Feed id `interested_sync` (code-only; **not** in `config/instahyre_feeds.json`).
+- Paginated list harvest via `_collect_feed_opportunity_cards` — **no detail pages**, no Stage-1, no descriptions, no OpenAI `batch_score_jobs`.
+- Shares pagination env vars with feeds (`INSTAHYRE_MAX_PAGES`, `INSTAHYRE_PAGE_*`, etc.).
+- Stubs are **not** appended to `all_jobs`; they bypass normalize → routing → Stage-1 → dedup → AI.
+
+**Persist order** (`persist_instahyre_interested_sync` in `dual_write.py`):
+1. `jobs` — minimal list metadata
+2. `user_job_state` — merge with stage protection (see below)
+3. Dedicated early `acquisition_run` (`run_notes=instahyre_interested_sync`) + `acquisition_query_runs` + `job_observations` (`query_id=interested_sync`)
+4. `ai_evaluations` — `_upsert_not_required_ai_evaluations_for_user_managed_jobs` (`ai_status=not_required`, `model=instahyre_interested_sync`); does not clobber existing `scored` or `not_required` rows
+
+**Stage protection** (`_merge_user_job_state_payload`): preserves snapshot for `rejected`, `Rejected`, and stages in `{Saved, Applied, HR Screen, Interview, Final Round, Offer, Rejected, Ghosted}` unless promoting `New`/`""` with incoming `applied=True`. Observations still update `first_seen` / `last_seen` / `currently_active` even when stage is protected.
+
+**Export cohort:** Interested-only jobs appear in `historical_jobs_view` but **not** in `current_jobs_view` / `jobs.csv` (tied to end-of-pipeline dual-write, not the early sync run).
+
+**Within-run routing:** jobs with user-managed `pipeline_stage` (e.g. `Applied` from Interested sync) that reappear in feed acquisition route to **fully_processed** and skip AI (`not_required`).
+
+**Terminal log block:** `🟣 INSTAHYRE INTERESTED SYNC SUMMARY` — fields include cards harvested, DB jobs upserted, observations written, **`protected_count`**, **`not_required_evals_written`**, **`sync_run_id`**.
+
+**Does not run:** Stage-1, OpenAI batch scoring, description fetch, recruiter extraction. **Does** persist `ai_evaluations` rows as `not_required` for user-managed CRM stages (not the same as running AI scoring).
+
+**Isolated Interested sync validation:**
+
+```bash
+DEBUG_INSTAHYRE=true \
+LINKEDIN_MAX_RUNS=0 GREENHOUSE_MAX_RUNS=0 LEVER_MAX_RUNS=0 WEWORKREMOTELY_MAX_RUNS=0 \
+INSTAHYRE_MAX_RUNS=1 \
+python main.py
+
+python -m unittest \
+  tests.test_instahyre_interested_sync \
+  tests.test_instahyre_applied_status \
+  tests.test_dual_write_applied_merge \
+  tests.test_materialize_applied_merge \
+  -v
+```
+
+Success indicators: `🟣 INSTAHYRE INTERESTED SYNC SUMMARY` in terminal; `observations written` > 0 when Interested list has cards; unit tests pass.
 
 **Isolated Feed 1 pagination validation:**
 
@@ -297,13 +343,142 @@ streamlit run dashboard/app.py
 
 | Concern | Default source |
 |---------|----------------|
-| Current jobs | `current_jobs_view` |
-| Historical jobs | `historical_jobs_view` |
+| Job Listings table (main funnel) | `historical_jobs_view` via `load_historical_state()` → visibility + sidebar filters |
+| Latest acquisition export cohort | `current_jobs_view` (KPI “Latest Acquisition”) |
 | Recruiter CRM | `active_recruiters_view` |
+| Last acquisition timestamp | `latest_acquisition_run_view` (header “Last acquisition refresh”) |
 | Pipeline stage / notes | `user_job_state` (writes when `SQLITE_DASHBOARD_WRITE=1`, default on) |
-| Recruiter edits | `recruiters` table |
+| Hiring Manager edit | `jobs.hiring_manager` + `recruiters` upsert + append-only `recruiter_job_links` (Phase 3B; same write gate) |
+| Recruiter edits | `recruiters` table (`recruiter_stage` from CRM editor) |
 
 Sidebar should reflect SQLite-backed data. After editing a pipeline stage or recruiter field, refresh — changes persist in the DB.
+
+### Dashboard cohorts (`dashboard_df` vs `filtered_df`)
+
+Implemented in [`dashboard/data_flow.py`](../dashboard/data_flow.py). Sidebar filters affect the **Job Listings table only**; KPIs, Recommended Actions, Job Search Progression, Source Distribution, and Pipeline analytics use the full visibility cohort.
+
+| Frame | Definition | Filters |
+|-------|------------|---------|
+| `dashboard_df` | `historical_jobs_view` after display prep + `apply_activity_visibility()` | **System only** — active jobs OR user-managed pipeline stages |
+| `filtered_df` | `dashboard_df` after sidebar filters + table sort | **Sidebar only** — date, location, source, status, min score, recruiter contact |
+
+| UI section | Data source | Sidebar-filtered? |
+|------------|-------------|-------------------|
+| Header “Total Jobs” | `len(dashboard_df)` | No |
+| “Latest Acquisition” | `current_jobs_view` row count | No |
+| “Last acquisition refresh” | `latest_acquisition_run_view` | No |
+| **Recommended Actions** (four queues) | `dashboard_df` via `recommended_actions.py` | **No** |
+| **Job Search Progression** (Discovery / Application / Outcomes) | `dashboard_df` | **No** |
+| Source Distribution chart | `dashboard_df` | No |
+| Pipeline analytics expander | `dashboard_editor_df` (from `dashboard_df`) | No |
+| Job Listings table | `editor_df` (from `filtered_df`) | **Yes** |
+| **Recruiter Relationship Manager** | `recruiter_crm_df` from `active_recruiters_view` | **No** (full CRM cohort) |
+| CRM **Total Recruiters** KPI | `len(recruiter_crm_df)` | No |
+| **Recruiter Relationship Progression** | `recruiter_stage` counts via `recruiter_funnel.py` | No |
+
+**Recruiter CRM metrics** use `recruiter_stage` workflow stages (`discovered` → `warm` → `active` → `responded`; outcomes: `ghosted`, `archived`). They do **not** use `currently_active` (acquisition sighting flag). Status edits persist via `persist_dashboard_crm_edits` → `recruiters.recruiter_stage`.
+
+**Activity visibility:** inactive `New` jobs hidden; inactive jobs in user-managed stages (`Applied` and beyond, plus `Saved`) remain visible (CRM memory).
+
+**Min score filter:** applies to discovery stages (`New`, `Saved`) only; user-managed stages always pass.
+
+**Score badge:** `ai_status=not_required` displays as “Not Required” (user-managed CRM / sync imports).
+
+### Recommended Actions (Phase 3A / 3A.2)
+
+Job-centric rule engine in [`dashboard/recommended_actions.py`](../dashboard/recommended_actions.py). Command Center UI in [`dashboard/recommended_actions_ui.py`](../dashboard/recommended_actions_ui.py). Uses **`dashboard_df` only** — no recruiter CRM fields; sidebar filters do not affect queue membership.
+
+**Base cohort** (all queues): `New`/`Saved`, `ai_status=scored`, `is_ai_scored=true`, score ≥ 8, parseable `first_seen`.
+
+**Waterfall** (first match wins — each job in at most one queue):
+
+| Order | Queue | Rules |
+|-------|-------|-------|
+| 1 | **Needs Review** | Base cohort AND `first_seen` ≥ 14 days ago (no `currently_active` or `reason` requirement) |
+| 2 | **High Confidence** | Base cohort AND days 0–13 AND score ≥ 9 AND `currently_active` AND non-empty `reason` |
+| 3 | **Apply Today** | Base cohort AND days 0–3 AND score 8 (score &lt; 9) AND `currently_active` AND non-empty `reason` |
+| 4 | **Apply This Week** | Base cohort AND days 4–13 AND score 8 (score &lt; 9) AND `currently_active` AND non-empty `reason` |
+
+Thresholds and labels: [`dashboard/recommended_actions_config.py`](../dashboard/recommended_actions_config.py) (`HIGH_SCORE_MIN=8`, `HIGH_CONFIDENCE_MIN=9`, `APPLY_TODAY_MAX_DAYS=3`, `APPLY_WEEK_MIN_DAYS=4`, `APPLY_WEEK_MAX_DAYS=13`, `NEEDS_REVIEW_MIN_DAYS=14`).
+
+#### Command Center UX
+
+Display helpers: [`dashboard/source_display.py`](../dashboard/source_display.py) (human-readable source labels in sidebar, chart, table, CRM) and [`dashboard/ui_help.py`](../dashboard/ui_help.py) (info-icon tooltips for Needs Review and Job Listings headers).
+
+| Element | Behavior |
+|---------|----------|
+| Section title | **Recommended Actions** |
+| Queue panels | **2×2 grid**: High Confidence (blue) · Apply Today (green) / Apply This Week (teal) · Needs Review (amber) |
+| Needs Review help icon | Info icon beside header; tooltip copy `14+ days old • Decide or clear` via `ui_help.help_icon_html()` (`NEEDS_REVIEW_SUBTITLE` in config is tooltip text, not rendered subtitle) |
+| Scrollable panels | Dynamic height via `compute_queue_panel_height_px()` in config (measured card constants, max cap 360px); `st.container(height=…)` when Streamlit ≥ 1.30; border + internal scroll; shrinks when few cards visible |
+| Footer row | Caption **Showing X of Y jobs** left; **Load More** right (outside scroll container) |
+| Pagination | Per-queue display caps (8 / 10 / 12 / 10); **Load More** adds 25 (`QUEUE_LOAD_MORE_INCREMENT`) |
+| Compact cards | Title, company, AI score (`X/10`) |
+| **Open Job ↗** | `st.link_button` to posting URL when valid http(s) link; disabled **No link** otherwise |
+| **Applied ✓** (Phase 3A.1) | High Confidence, Apply Today, and Apply This Week cards only; secondary ghost action beside **Why?**; calls `mark_job_applied()` in [`dashboard_write.py`](../src/db/services/dashboard_write.py) → `pipeline_stage=Applied`, `applied=True`, `user_job_state.updated_at=now`; job leaves all apply queues on rerun |
+| **Why?** | `st.popover` with full AI rationale ([`dashboard/display_text.py`](../dashboard/display_text.py) `render_why_text_action()`) |
+
+**Phase 3A.1 quick-apply:** Requires `dashboard_write_enabled()` (`SQLITE_DASHBOARD_WRITE=1`). Advanced statuses remain Job Listings only. Needs Review cards unchanged (Open Job + Why? only).
+
+**Deferred (not in 3A / 3A.2):**
+
+- **Follow Up** — requires `state_updated_at` (`user_job_state.updated_at`) on the dashboard read path; not exposed in `historical_jobs_view` today.
+- **Apply With Contact** — high-score jobs with recruiter/hiring-manager metadata (future candidate).
+- **Recruiter relationship action queues** — dormant/warm relationships, recruiter health (deferred; separate from job-centric engine and from HM enrichment below).
+
+### Hiring Manager enrichment (Phase 3B)
+
+Job-bound recruiter capture from the **Job Listings** table — not a standalone Add Recruiter form.
+
+**Operator flow:** edit **Hiring Manager** on a job row → on save, when `SQLITE_DASHBOARD_WRITE=1` (default under D8B), `persist_dashboard_job_edits(..., prior_df=editor_df)` in [`dashboard_write.py`](../src/db/services/dashboard_write.py) calls `sync_recruiter_from_hiring_manager()` in [`recruiter_enrichment.py`](../src/db/services/recruiter_enrichment.py).
+
+| Write target | Behavior |
+|--------------|----------|
+| `jobs.hiring_manager` | Always updated (current display for Job Listings row) |
+| `recruiters` | Upsert by normalized `recruiter_key` (`name.strip().lower()`); new rows get `source=job_editor` |
+| `recruiter_job_links` | **Append-only** — insert `(recruiter_id, job_id)` if pair missing; **never delete** on HM change |
+
+**Display vs history:** Job Listings shows the Hiring Manager last saved. Recruiter CRM (`active_recruiters_view`) retains all historical recruiter–job links; `jobs_connected` counts live links per recruiter.
+
+**Normalization:** empty / `not specified` / `unknown` → `Not Specified`; skips recruiter upsert and link creation; existing links preserved.
+
+**Requires:** `dashboard_write_enabled()` (`SQLITE_ENABLED` + `SQLITE_READ` + `SQLITE_DASHBOARD_WRITE`). When writes are off, HM edits are not persisted (CSV fallback path does not include `hiring_manager`).
+
+**Deferred (not in 3B HM enrichment):** standalone recruiter capture, job URL lookup, stub jobs, relationship action queues, deleting historical links on HM change.
+
+**Unit tests:**
+
+```bash
+python -m unittest tests.test_recruiter_enrichment tests.test_dashboard_job_hiring_manager -v
+```
+
+### Dashboard verification (unit tests)
+
+```bash
+python -m unittest \
+  tests.test_dashboard_loaders \
+  tests.test_dashboard_visibility \
+  tests.test_dashboard_data_flow \
+  tests.test_dashboard_funnel \
+  tests.test_dashboard_funnel_workflow \
+  tests.test_dashboard_recruiter_funnel \
+  tests.test_dashboard_recruiter_workflow \
+  tests.test_recommended_actions \
+  tests.test_recommended_actions_applied \
+  tests.test_display_text \
+  tests.test_source_display \
+  tests.test_dashboard_refresh_label \
+  -v
+```
+
+**Phase 3A / 3A.1 / 3B focused:**
+
+```bash
+python -m unittest tests.test_recommended_actions tests.test_recommended_actions_applied tests.test_display_text tests.test_dashboard_data_flow -v
+python -m unittest tests.test_recruiter_enrichment tests.test_dashboard_job_hiring_manager -v
+```
+
+**Manual checks** (see [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md) §2.8–§2.9 / §3.4): sidebar Location/Job Status changes table only; Recommended Actions, Job Search Progression, and Source Distribution unchanged; “Total Jobs” stable under filters; “Showing X of Y” — Y constant. CRM: change recruiter Status → Relationship Progression card updates; Total Recruiters matches table row count.
 
 ### CSV fallback (emergency or legacy)
 
@@ -330,6 +505,34 @@ Reads fall back to `data/jobs.csv`, `data/historical_jobs.csv`, `data/recruiter_
 | `python3 scripts/validate_bootstrap.py --min-v2-fill-rate 0.99` | Stricter V2 coverage | Identity hardening check | Safe |
 | `python3 scripts/validate_bootstrap.py --log path/to/log.txt` | Optional log grep for V2 merge authority | Deep validation | Safe |
 | `python3 scripts/instahyre_dom_probe.py` | Read-only Instahyre DOM probe (JSON to terminal) | Instahyre page broken / zero cards | Lightweight (needs auth) |
+
+### Instahyre Interested sync + user-managed routing tests
+
+```bash
+python -m unittest \
+  tests.test_instahyre_interested_sync \
+  tests.test_instahyre_applied_status \
+  tests.test_dual_write_applied_merge \
+  tests.test_materialize_applied_merge \
+  tests.test_pipeline_user_managed_routing \
+  -v
+```
+
+### Dashboard architecture tests
+
+```bash
+python -m unittest \
+  tests.test_dashboard_loaders \
+  tests.test_dashboard_visibility \
+  tests.test_dashboard_data_flow \
+  tests.test_dashboard_funnel \
+  tests.test_dashboard_funnel_workflow \
+  tests.test_dashboard_recruiter_funnel \
+  tests.test_dashboard_recruiter_workflow \
+  tests.test_recommended_actions \
+  tests.test_dashboard_refresh_label \
+  -v
+```
 
 ### Lightweight module checks (no full scrape)
 
@@ -389,7 +592,7 @@ Set `DEBUG_IDENTITY=true` on a pipeline run for per-job description reuse logs (
 
 | Script | Command | What it does | When to use | Safety |
 |--------|---------|--------------|-------------|--------|
-| Scheduled acquisition | `./scripts/scheduling/run_scheduled_acquisition.sh` | `with_file_lock.py` → `main.py` → production parity | 07:00 / 19:00 via LaunchAgent or manual test | Safe |
+| Scheduled acquisition | `./scripts/scheduling/run_scheduled_acquisition.sh` | `with_file_lock.py` → `main.py` → production parity | 10:00 / 21:00 IST via LaunchAgent or manual test | Safe |
 | Scheduled backup | `./scripts/scheduling/run_scheduled_backup.sh` | Archive + CSV export + SOT parity | Sunday 23:00 optional LaunchAgent | Safe (writes archive) |
 | Install LaunchAgents | `./scripts/scheduling/install_launchagents.sh` | Renders plists → `~/Library/LaunchAgents`, `launchctl bootstrap` | One-time setup | Safe |
 | Install + backup | `./scripts/scheduling/install_launchagents.sh --with-backup` | Same + weekly backup agent | Optional | Safe |
@@ -490,6 +693,14 @@ Dual-write runs only when **both** `SQLITE_ENABLED=1` and `SQLITE_DUAL_WRITE=1`.
 | D4 pipeline read tests | `python -m unittest tests.test_pipeline_read tests.test_db_read_views -q` | Historical index + description store DB reads; routing fixture | Safe |
 | D5 write-primary tests | `python -m unittest tests.test_write_primary tests.test_dual_write_metadata tests.test_d2_export -q` | CSV write gating + DB export helpers | Safe |
 | D6 dashboard tests | `python -m unittest tests.test_dashboard_loaders -q` | CRM loader + dashboard DB write round-trip | Safe |
+| Dashboard data-flow tests | `python -m unittest tests.test_dashboard_data_flow tests.test_dashboard_visibility -q` | `dashboard_df` vs `filtered_df` isolation | Safe |
+| Job Search Progression tests | `python -m unittest tests.test_dashboard_funnel tests.test_dashboard_funnel_workflow -q` | Funnel counts + workflow HTML | Safe |
+| Recommended Actions tests (Phase 3A / 3A.1 / 3A.2) | `python -m unittest tests.test_recommended_actions tests.test_recommended_actions_applied tests.test_display_text tests.test_source_display tests.test_dashboard_data_flow -q` | Four-queue waterfall, day 8–13 coverage, display caps, dynamic panel height (`QueuePanelHeightTests`), Applied quick action, Why? popover helpers, source display labels, cohort isolation | Safe |
+| HM enrichment tests (Phase 3B) | `python -m unittest tests.test_recruiter_enrichment tests.test_dashboard_job_hiring_manager -q` | Append-only links, persist + dirty detection | Safe |
+| Recruiter Relationship Progression tests | `python -m unittest tests.test_dashboard_recruiter_funnel tests.test_dashboard_recruiter_workflow -q` | CRM stage counts + workflow HTML | Safe |
+| Instahyre Interested sync tests | `python -m unittest tests.test_instahyre_interested_sync -q` | Interested sync persist + cohort isolation | Safe |
+| User-managed routing tests | `python -m unittest tests.test_pipeline_user_managed_routing -q` | `not_required` + fully_processed short-circuit | Safe |
+| Validation mode tests | `python -m unittest tests.test_validation_modes -q` | Parity mode behavior | Safe |
 | D7 reset/export tests | `python -m unittest tests.test_reset_sqlite -q` | SQLite truncate profiles + SOT parity detection | Safe |
 | CSV memory export | `SQLITE_ENABLED=1 python scripts/export_csv_memory.py --all` | Export all CSV/JSON mirrors from DB | Safe |
 | SOT parity validator | `python scripts/validate_sqlite_parity.py --mode source-of-truth --fail-on-error` | DB reference vs on-disk CSV exports | Safe |
@@ -506,8 +717,8 @@ Dual-write runs only when **both** `SQLITE_ENABLED=1` and `SQLITE_DUAL_WRITE=1`.
 | | OVERALL | Both sections PASS | — | Any import failure |
 | `validate_sqlite_parity --mode post-dual-write` | LIFECYCLE / OPERATIONAL | No strict failures | — | Strict failures listed |
 | | CUMULATIVE MEMORY HEALTH | No warnings | Extra DB keys vs historical; DB scored > CSV | Historical keys missing in DB |
-| `validate_sqlite_parity --mode production` | DB HEALTH + OPERATIONAL | No strict failures | Query state JSON drift; D2 metadata gaps | Missing DB eval, orphan links, cohort mismatch |
-| | CUMULATIVE HEALTH (DB-first) | No strict failures | Jobs without eval; description gap | Historical keys in CSV missing from DB |
+| `validate_sqlite_parity --mode production` | DB HEALTH + OPERATIONAL | No strict failures | Query state JSON drift; D2 metadata gaps; stale `historical_jobs.csv` keys when `SQLITE_EXPORT_HISTORICAL_CSV=0` | Missing DB eval, orphan links, cohort mismatch |
+| | CUMULATIVE HEALTH (DB-first) | No strict failures | Jobs without eval; description gap; **`not_required` aggregate (DB-only CRM state)**; historical CSV keys not in DB when export off | Historical CSV keys not in DB when `SQLITE_EXPORT_HISTORICAL_CSV=1`; DB `ai_status` aggregate gaps (excluding expected `not_required`) |
 | | OVERALL | No strict failures | Warnings OK | Strict failures |
 | `validate_sqlite_parity --mode csv-mirror-sync` | LIFECYCLE + OPERATIONAL PARITY | No strict failures | Cumulative CSV superset warnings | Strict failures (e.g. jobs not in historical, recruiter CSV count) |
 | | OVERALL | No strict failures | Warnings OK | Strict failures |
@@ -634,7 +845,7 @@ Then create auth files via scraper login flows → run `python main.py` → `str
 
 ### B. Daily refresh
 
-**Scheduled (production):** LaunchAgents at 07:00 and 19:00 run `run_scheduled_acquisition.sh` (acquisition + parity). Review when convenient:
+**Scheduled (production):** LaunchAgents at 10:00 and 21:00 IST run `run_scheduled_acquisition.sh` (acquisition + parity). Review when convenient:
 
 ```bash
 streamlit run dashboard/app.py
@@ -729,6 +940,7 @@ python scripts/validate_sqlite_parity.py --mode production --fail-on-error
 | Dashboard shows stale CSV | `SQLITE_READ=0` or `SQLITE_ENABLED=0` set — remove overrides or export from DB |
 | Scheduled run skipped immediately | Prior run still holding lock (`SKIP: another acquisition holds`) — wait or inspect long `main.py`. If log shows `/usr/bin/flock: No such file`, upgrade scheduler scripts (use `with_file_lock.py`). |
 | Parity fails after scheduled run on empty DB | Run one successful `main.py` before `--fail-on-error` is meaningful |
+| `git push` Repository not found (unrelated) | For GitHub HTTPS: `gh auth setup-git` — see [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md) HTTPS note |
 
 ---
 

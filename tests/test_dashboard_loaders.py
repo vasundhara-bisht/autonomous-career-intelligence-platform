@@ -465,5 +465,116 @@ class DashboardWriteRoundTripTests(unittest.TestCase):
         self.assertEqual(str(row["recruiter_stage"]), "warm")
 
 
+class CrmBooleanNormalizationTests(unittest.TestCase):
+    def test_normalize_recruiter_crm_sqlite_int_booleans(self) -> None:
+        from dashboard.loaders import normalize_recruiter_crm_columns
+
+        raw = pd.DataFrame(
+            [
+                {
+                    "RECRUITER_KEY": "k1",
+                    "recruiter_name": "A",
+                    "currently_active": 1,
+                    "recruiter_replied": 0,
+                    "outreach_sent": 1,
+                    "recruiter_stage": "discovered",
+                    "notes": "",
+                }
+            ]
+        )
+        out = normalize_recruiter_crm_columns(raw)
+        self.assertTrue(bool(out.iloc[0]["currently_active"]))
+        self.assertFalse(bool(out.iloc[0]["recruiter_replied"]))
+        self.assertTrue(bool(out.iloc[0]["outreach_sent"]))
+
+    def test_normalize_recruiter_crm_string_and_python_bools(self) -> None:
+        from dashboard.loaders import normalize_recruiter_crm_columns
+
+        raw = pd.DataFrame(
+            [
+                {
+                    "RECRUITER_KEY": "k1",
+                    "recruiter_name": "A",
+                    "currently_active": "true",
+                    "recruiter_replied": "False",
+                    "outreach_sent": True,
+                    "recruiter_stage": "discovered",
+                    "notes": "",
+                }
+            ]
+        )
+        out = normalize_recruiter_crm_columns(raw)
+        self.assertTrue(bool(out.iloc[0]["currently_active"]))
+        self.assertFalse(bool(out.iloc[0]["recruiter_replied"]))
+        self.assertTrue(bool(out.iloc[0]["outreach_sent"]))
+
+    def test_normalize_recruiter_crm_nulls_default_false(self) -> None:
+        from dashboard.loaders import normalize_recruiter_crm_columns
+
+        raw = pd.DataFrame(
+            [
+                {
+                    "RECRUITER_KEY": "k1",
+                    "recruiter_name": "A",
+                    "currently_active": None,
+                    "recruiter_replied": float("nan"),
+                    "outreach_sent": "",
+                    "recruiter_stage": "discovered",
+                    "notes": "",
+                }
+            ]
+        )
+        out = normalize_recruiter_crm_columns(raw)
+        self.assertFalse(bool(out.iloc[0]["currently_active"]))
+        self.assertFalse(bool(out.iloc[0]["recruiter_replied"]))
+        self.assertFalse(bool(out.iloc[0]["outreach_sent"]))
+
+    def test_load_recruiter_crm_df_preserves_sqlite_booleans(self) -> None:
+        from datetime import UTC, datetime
+
+        from db.bootstrap import ensure_database_ready
+        from db.engine import get_session
+        from db.models.schema import Recruiter
+        from dashboard.loaders import load_recruiter_crm_df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            with patch.dict(
+                os.environ,
+                {
+                    "AI_JOB_AGENT_DATA_DIR": tmp,
+                    "AI_JOB_AGENT_DB_PATH": str(db_path),
+                    "SQLITE_ENABLED": "1",
+                    "SQLITE_READ": "1",
+                },
+                clear=False,
+            ):
+                _clear_db_caches()
+                ensure_database_ready()
+                now = datetime.now(UTC).replace(tzinfo=None)
+                with get_session() as session:
+                    session.add(
+                        Recruiter(
+                            recruiter_key="bool test",
+                            recruiter_name="Bool Test",
+                            recruiter_stage="discovered",
+                            first_seen=now,
+                            last_seen=now,
+                            currently_active=True,
+                            recruiter_replied=False,
+                            outreach_sent=True,
+                        )
+                    )
+                    session.commit()
+
+                df = load_recruiter_crm_df()
+            _clear_db_caches()
+
+        row = df[df["RECRUITER_KEY"] == "bool test"].iloc[0]
+        self.assertTrue(bool(row["currently_active"]))
+        self.assertFalse(bool(row["recruiter_replied"]))
+        self.assertTrue(bool(row["outreach_sent"]))
+
+
 if __name__ == "__main__":
     unittest.main()

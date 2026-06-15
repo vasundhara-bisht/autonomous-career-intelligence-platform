@@ -1,13 +1,15 @@
-# Scheduler setup (macOS, optional)
+# Scheduler setup (macOS production)
 
-**Reference** for optional macOS production scheduling: install, configuration, logs, and uninstall. The scheduler is a **first-class platform capability**: it lives outside `main.py` and invokes the existing pipeline unchanged (D8B SQLite defaults, default `*_MAX_RUNS` caps, no `SQLITE_*` exports).
+**Canonical reference** for production scheduling install, configuration, logs, and uninstall on the private repo. The scheduler is a **first-class platform capability**: it lives outside `main.py` and invokes the existing pipeline unchanged (D8B SQLite defaults, default `*_MAX_RUNS` caps, no `SQLITE_*` exports).
 
-**Schedule (example):**
+**Schedule (approved):**
 
 | Job | Local time | Script |
 |-----|------------|--------|
-| Acquisition + parity | **07:00** and **19:00** daily | `scripts/scheduling/run_scheduled_acquisition.sh` |
-| Backup (optional) | **Sunday 23:00** | `scripts/scheduling/run_scheduled_backup.sh` |
+| Acquisition + parity | **10:00** and **21:00** IST daily | `scripts/scheduling/run_scheduled_acquisition.sh` |
+| Backup (optional) | **Sunday 23:00** IST | `scripts/scheduling/run_scheduled_backup.sh` |
+
+**Source of truth for times:** [`scripts/scheduling/launchd/com.vasundhara-bisht.ai-job-agent.acquisition.plist.template`](../scripts/scheduling/launchd/com.vasundhara-bisht.ai-job-agent.acquisition.plist.template) (`StartCalendarInterval` Hour **10** and **21**). Installed plist under `~/Library/LaunchAgents/` must match the template after `install_launchagents.sh`. All documentation references **10:00 / 21:00 IST**.
 
 **Not scheduled:** Streamlit dashboard (manual review). See [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md) §3.
 
@@ -17,7 +19,7 @@
 
 | Layer | Role |
 |-------|------|
-| **Product** | Twice-daily automated job discovery (07:00 / 19:00); dashboard review stays human-in-the-loop |
+| **Product** | Twice-daily automated job discovery (10:00 / 21:00 IST); dashboard review stays human-in-the-loop |
 | **Architecture** | External `launchd` → `run_scheduled_acquisition.sh` → `with_file_lock.py` (fcntl) → `main.py` → SQLite dual-write; one `acquisition_runs` row per pipeline run; file lock prevents concurrent writers |
 | **Operational** | Install, logs, parity validation, uninstall — this document |
 
@@ -30,24 +32,24 @@ The scheduler does not alter scoring, acquisition, or persistence logic inside `
 | Doc | Use when you need |
 |-----|-------------------|
 | [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md) §3 | Daily workflow, manual fallback, weekly backup |
-| [PROJECT_COMMAND_REFERENCE.md](./PROJECT_COMMAND_REFERENCE.md) §10, §12 | Script commands and cheat sheet |
-| [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md) §8–§9 | Operating model and limitations |
-| [CLONE_SETUP.md](./CLONE_SETUP.md) | Fresh clone install and first run |
+| [PROJECT_COMMAND_REFERENCE.md](./PROJECT_COMMAND_REFERENCE.md) §10.1, §12 | Script commands and cheat sheet |
+| [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md) §6–§7 | Operating model and limitations |
+| [PUBLIC_MIRROR_PROMOTION.md](./PUBLIC_MIRROR_PROMOTION.md) | Promoting `scripts/scheduling/` to the public portfolio clone |
 
 ---
 
-## Operator-local artifacts
+## Public mirror note
 
-**Never commit:** `.env`, `logs/scheduled/*`, or installed plists under `~/Library/LaunchAgents/`. These stay on your machine only.
+`scripts/scheduling/` (shell scripts and plist templates) may be copied to the **public** portfolio repo on promotion. **Operator-local only:** `.env`, `logs/scheduled/`, and installed plists under `~/Library/LaunchAgents/`. Sanitize `docs/SCHEDULER_SETUP.md` on promote (example profile paths) per [PUBLIC_MIRROR_PROMOTION.md](./PUBLIC_MIRROR_PROMOTION.md).
 
 ---
 
 ## Prerequisites
 
-1. Repository: your clone path (e.g. where you ran `git clone`).
+1. Repository: `~/Desktop/autonomous-career-intelligence-platform` (or your clone path).
 2. Virtualenv: `python3 -m venv venv && pip install -r requirements.txt`
 3. Playwright: `playwright install chromium` (for LinkedIn / Instahyre).
-4. Secrets file: create **`.env`** in repo root (gitignored; never commit):
+4. Secrets file: create **`.env`** in repo root (gitignored; production-only, never commit):
 
    ```bash
    OPENAI_API_KEY=sk-...
@@ -64,11 +66,13 @@ The scheduler does not alter scoring, acquisition, or persistence logic inside `
 
 ## What each run does
 
-### Acquisition (07:00 / 19:00)
+### Acquisition (10:00 / 21:00 IST)
 
 1. Exclusive file lock via [scripts/scheduling/with_file_lock.py](../scripts/scheduling/with_file_lock.py) (`fcntl`) on `/tmp/ai-job-agent-acquisition.lock` — skips if a previous run is still active.
-2. `python main.py` — default D8B SQLite flags (no `SQLITE_*` exports); wrapper sets `LINKEDIN_MAX_RUNS=3` (other `*_MAX_RUNS` use code defaults).
+2. `python main.py` — default D8B SQLite flags (no `SQLITE_*` exports); wrapper sets `LINKEDIN_MAX_RUNS=3` (other `*_MAX_RUNS` use code defaults, including Instahyre feeds + **Interested sync** when `INSTAHYRE_MAX_RUNS` is non-zero).
 3. `python scripts/validate_sqlite_parity.py --mode production --fail-on-error`
+
+When Instahyre is enabled, scheduled runs include post-feed **Interested synchronization** (list-only Applied-state sync) inside `main.py` — same as manual acquisition. Look for `🟣 INSTAHYRE INTERESTED SYNC SUMMARY` in acquisition logs. Parity validation behavior is unchanged.
 
 Logs: `logs/scheduled/acquisition-YYYYMMDD-HHMMSS.log` (gitignored).
 
@@ -85,7 +89,7 @@ Logs: `logs/scheduled/backup-YYYYMMDD-HHMMSS.log`
 ## Install LaunchAgents
 
 ```bash
-cd /path/to/your-clone
+cd ~/Desktop/autonomous-career-intelligence-platform
 chmod +x scripts/scheduling/*.sh
 ./scripts/scheduling/install_launchagents.sh
 # Optional weekly backup:
@@ -97,7 +101,7 @@ This copies rendered plists to `~/Library/LaunchAgents/` and runs `launchctl boo
 Manual install (without helper script):
 
 ```bash
-REPO=/path/to/your-clone
+REPO=~/Desktop/autonomous-career-intelligence-platform
 sed "s|@REPO_ROOT@|${REPO}|g" \
   scripts/scheduling/launchd/com.vasundhara-bisht.ai-job-agent.acquisition.plist.template \
   > ~/Library/LaunchAgents/com.vasundhara-bisht.ai-job-agent.acquisition.plist
@@ -110,7 +114,7 @@ launchctl bootstrap "gui/$(id -u)" \
 ## Manual test (before relying on calendar)
 
 ```bash
-cd /path/to/your-clone
+cd ~/Desktop/autonomous-career-intelligence-platform
 ./scripts/scheduling/run_scheduled_acquisition.sh
 ```
 
@@ -161,7 +165,7 @@ Pipeline remains runnable manually: `python main.py`.
 
 | Label | Calendar | Command |
 |-------|----------|---------|
-| `com.vasundhara-bisht.ai-job-agent.acquisition` | 07:00, 19:00 daily | `run_scheduled_acquisition.sh` |
+| `com.vasundhara-bisht.ai-job-agent.acquisition` | 10:00, 21:00 IST daily | `run_scheduled_acquisition.sh` |
 | `com.vasundhara-bisht.ai-job-agent.backup` | Sunday 23:00 (optional) | `run_scheduled_backup.sh` |
 
 Templates live under `scripts/scheduling/launchd/*.plist.template` (`@REPO_ROOT@` replaced on install).

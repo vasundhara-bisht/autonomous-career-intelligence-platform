@@ -365,6 +365,12 @@ def check_cumulative_memory_warnings(
         elif db_n < csv_n and status == "scored":
             out.failures.append(f"DB ai_status scored ({db_n}) < historical CSV ({csv_n})")
 
+    not_required_n = db_status.get("not_required", 0)
+    if not_required_n:
+        out.warnings.append(
+            f"DB ai_status not_required ({not_required_n}) is DB-only CRM state"
+        )
+
     if extra_in_db:
         import_extras = session.execute(
             select(func.count())

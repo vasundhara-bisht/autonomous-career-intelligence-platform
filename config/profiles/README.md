@@ -2,22 +2,18 @@
 
 Canonical candidate identity and preferences for **OpenAI batch scoring** in the job pipeline.
 
-## Default profile (repository)
+## Default profile
 
 | File | Purpose |
 |------|---------|
-| [`ai_candidate_profile.example.md`](ai_candidate_profile.example.md) | Generic example persona for clones, tests, and public repos |
+| [`ai_candidate_profile_v2.md`](ai_candidate_profile_v2.md) | Production profile (target roles, industries, positive/negative signals) |
 
 Resolved by [`paths.ai_candidate_profile_path()`](../../src/paths.py) unless overridden.
-
-## Your own profile (local only)
-
-Copy the example to a new markdown file (e.g. `config/profiles/my_candidate_profile.md`), add your real preferences, and **do not commit** it if it contains PII.
 
 ## Environment override
 
 ```bash
-export AI_CANDIDATE_PROFILE_PATH=config/profiles/my_candidate_profile.md
+export AI_CANDIDATE_PROFILE_PATH=config/profiles/my_variant.md
 python main.py
 ```
 
@@ -38,20 +34,19 @@ Those live in [`src/agent/ai_batch_scorer.py`](../../src/agent/ai_batch_scorer.p
 
 ## Editing workflow
 
-1. **Fresh clone:** edit `ai_candidate_profile.example.md`, or set `AI_CANDIDATE_PROFILE_PATH` to your own markdown file (see [docs/CLONE_SETUP.md](../../docs/CLONE_SETUP.md)).
-2. **Daily use:** edit your local profile file and export `AI_CANDIDATE_PROFILE_PATH` before `python main.py`.
-3. Run acquisition — profile is loaded once at the start of AI scoring.
-4. Terminal logs show path and character count, e.g. `Candidate profile: ... (4177 chars)`.
+1. Edit `ai_candidate_profile_v2.md` (or your override path).
+2. Run acquisition — profile is loaded once at the start of AI scoring.
+3. Terminal logs show path and character count, e.g. `Candidate profile: ... (4177 chars)`.
 
 ## Token impact
 
-A full profile is often ~4,000+ characters (~1,000 tokens) per batch request, in addition to job descriptions and the fixed instruction block. Shorter profiles reduce cost; longer profiles improve fit specificity.
+The v2 profile is ~4,000+ characters (~1,000 tokens) per batch request, in addition to job descriptions and the fixed instruction block. Shorter profiles reduce cost; longer profiles improve fit specificity.
 
 ## Portfolio / public repos
 
-The committed default is the example file only. See [docs/PUBLIC_REPO.md](../../docs/PUBLIC_REPO.md) (maintainers).
+Replace personal data before publishing. Use a generic example profile or omit the file and document `AI_CANDIDATE_PROFILE_PATH` in [docs/PUBLIC_REPO.md](../../docs/PUBLIC_REPO.md).
 
 ## Related docs
 
-- [docs/PRODUCTION_OPERATIONS.md](../../docs/PRODUCTION_OPERATIONS.md) — AI scoring configuration
-- [docs/PRODUCT_STATUS_SUMMARY.md](../../docs/PRODUCT_STATUS_SUMMARY.md) — profile overview
+- [docs/PRODUCTION_OPERATIONS.md](../../docs/PRODUCTION_OPERATIONS.md) §5 — AI scoring configuration
+- [docs/PRODUCT_STATUS_SUMMARY.md](../../docs/PRODUCT_STATUS_SUMMARY.md) §5 — profile overview

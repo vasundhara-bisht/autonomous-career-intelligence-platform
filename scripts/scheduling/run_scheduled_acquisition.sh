@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Scheduled acquisition + production parity validation.
-# Invoked by launchd at 07:00 and 19:00 local time. See docs/SCHEDULER_SETUP.md.
+# Scheduled acquisition + production parity validation (private production).
+# Invoked by launchd at 10:00 and 21:00 IST. See docs/SCHEDULER_SETUP.md.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -39,7 +39,7 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   exit 1
 fi
 
-export AI_CANDIDATE_PROFILE_PATH="${AI_CANDIDATE_PROFILE_PATH:-config/profiles/ai_candidate_profile.example.md}"
+export AI_CANDIDATE_PROFILE_PATH="${AI_CANDIDATE_PROFILE_PATH:-config/profiles/ai_candidate_profile_v2.md}"
 unset LINKEDIN_QUALIFICATION_LANDING_URL || true
 export LINKEDIN_MAX_RUNS=3
 echo "Scheduler cap: LINKEDIN_MAX_RUNS=3"

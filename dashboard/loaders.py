@@ -234,6 +234,30 @@ def _empty_recruiter_crm_df() -> pd.DataFrame:
     return pd.DataFrame(columns=list(RECRUITER_CRM_SCHEMA_COLUMNS))
 
 
+def _coerce_bool_series(series: pd.Series) -> pd.Series:
+    """Coerce SQLite ints, Python bools, and string literals to bool."""
+    if series.empty:
+        return pd.Series(dtype=bool)
+
+    def _one(value: object) -> bool:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return False
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return bool(int(value))
+        text = str(value).strip().lower()
+        if text in {"", "nan", "none", "null"}:
+            return False
+        if text in {"true", "1", "yes", "on"}:
+            return True
+        if text in {"false", "0", "no", "off"}:
+            return False
+        return False
+
+    return series.map(_one).astype(bool)
+
+
 def normalize_recruiter_crm_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize CRM frame dtypes for dashboard display and save."""
     if df.empty:
@@ -247,13 +271,7 @@ def normalize_recruiter_crm_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     for col in ("outreach_sent", "recruiter_replied", "currently_active"):
         if col in out.columns:
-            out[col] = (
-                out[col]
-                .astype(str)
-                .str.lower()
-                .map({"true": True, "false": False})
-                .fillna(False)
-            )
+            out[col] = _coerce_bool_series(out[col])
 
     _crm_interaction_defaults = {
         "last_outreach_date": "",

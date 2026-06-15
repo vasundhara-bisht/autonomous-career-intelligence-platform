@@ -242,7 +242,7 @@ def _has_nonempty_value(value) -> bool:
 
 def _job_ai_status(job: dict) -> str:
     status = str(job.get("ai_status", "") or "").strip().lower()
-    if status in ("scored", "pending", "skipped_by_cap"):
+    if status in ("scored", "pending", "skipped_by_cap", "not_required"):
         return status
 
     if (

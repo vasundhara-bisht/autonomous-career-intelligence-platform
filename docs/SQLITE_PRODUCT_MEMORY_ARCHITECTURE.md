@@ -209,7 +209,7 @@ Recommended statuses:
 | `skipped_by_cap` | Job was valid and persisted but not scored because of run budget |
 | `scored` | AI produced score/reason |
 | `failed` | AI scoring was attempted but failed |
-| `not_required` | Optional future state for jobs intentionally excluded from scoring |
+| `not_required` | Jobs intentionally excluded from AI scoring (user-managed CRM / sync imports) |
 
 Important rules:
 
@@ -218,6 +218,50 @@ Important rules:
 - Unscored jobs should not be treated as bad-fit jobs.
 - Latest dashboard score should come from the latest valid `scored` evaluation.
 - Run-level skipped/pending state should not erase historical scored state.
+
+### `not_required` lifecycle
+
+| Stage | Behavior |
+|-------|----------|
+| **Writers** | Instahyre Interested sync (`model=instahyre_interested_sync`); `materialize_fully_processed_job()` when historical stage is user-managed |
+| **Readers** | Dashboard score badge “Not Required”; pipeline routing treats `not_required` as explicit AI state |
+| **Routing guard** | `_historical_job_needs_ai_fallback()` returns false for `not_required` — never re-queued for OpenAI scoring |
+| **Dual-write protection** | Runtime dual-write does not downgrade `not_required` → `pending` on re-write |
+| **Parity** | Production/import cumulative checks may WARN on `not_required` aggregate — expected DB-only CRM state, not a failure |
+
+---
+
+## 7A. User-Managed Pipeline Stages
+
+Canonical constants: [`src/agent/pipeline_stages.py`](../src/agent/pipeline_stages.py) (shared by agent, dual-write, dashboard).
+
+| Category | Stages | AI scoring |
+|----------|--------|------------|
+| **Discovery** | `New`, `Saved` | Eligible (subject to cap and min-score filters in dashboard) |
+| **User-managed (CRM)** | `Applied`, `HR Screen`, `Interview`, `Final Round`, `Offer`, `Rejected`, `Ghosted` | **`not_required`** — bypass AI evaluation |
+
+**Promotable vs protected (acquisition merge):**
+- **Promotable:** `""`, `New` — may promote to `Applied` when scrape/sync sets `applied=True`.
+- **Protected:** `Saved` and all user-managed stages — operator/sync state preserved unless explicit `New`→`Applied` promotion.
+
+**Incremental routing** (`main.py`): historical hit with user-managed `pipeline_stage` → **fully_processed** (skip Stage-1, dedup, descriptions, AI). Historical hit needing AI fallback only when not user-managed and not `not_required`.
+
+---
+
+## 7B. Instahyre Interested Sync Persistence
+
+Post-feed synchronization phase (when `INSTAHYRE_MAX_RUNS ≠ 0`). List-only harvest; stubs never enter the main `all_jobs` pipeline.
+
+**Persist path** (`persist_instahyre_interested_sync`):
+
+1. `jobs` — minimal list metadata from Interested filter cards
+2. `user_job_state` — `_merge_user_job_state_payload` (Applied promotion; stage protection for Saved+)
+3. Early `acquisition_run` + `job_observations` (`query_id=interested_sync`) — updates `first_seen` / `last_seen` / `currently_active` even when stage protected
+4. `ai_evaluations` — `not_required` rows for user-managed stages
+
+**Export cohort isolation:** Interested-only jobs in `historical_jobs_view`; excluded from `current_jobs_view` / `jobs.csv` until picked up by a full acquisition dual-write.
+
+Operator detail: [PROJECT_COMMAND_REFERENCE.md §5](./PROJECT_COMMAND_REFERENCE.md#5-instahyre-specific-controls).
 
 ---
 
@@ -316,22 +360,56 @@ Once SQLite is active, CSVs should be regenerable from the database.
 |---|---|---|
 | `acquisition_runs` | One row per pipeline run | Yes for run history |
 | `acquisition_query_runs` | LinkedIn query/InstaHyre feed execution records | Yes for query/feed history |
+
+**Run provenance:** Production may trigger the pipeline manually (`python main.py`) or via macOS launchd ([SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md)). Both paths use the same dual-write and SQLite gates; the scheduler is external orchestration only.
 | `query_cooldown_state` | Current query cooldown/orchestration state | Yes for orchestration |
 | `reset_events` | Reset profile, archive ID, resources affected | Yes for reset audit |
 
-**Run provenance:** Production may trigger the pipeline manually (`python main.py`) or via macOS launchd ([SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md)). Both paths use the same dual-write and SQLite gates; the scheduler is external orchestration only.
-
-### Recommended Views
+### Shipped views (Alembic)
 
 | View | Purpose |
 |---|---|
-| `current_jobs_view` | Replacement for current `jobs.csv` dashboard/export shape |
+| `current_jobs_view` | Latest export cohort (`jobs.csv` shape); KPI “Latest Acquisition” |
+| `historical_jobs_view` | Full job memory for dashboard table and progression |
 | `latest_ai_evaluations_view` | Latest valid AI evaluation per job |
 | `active_recruiters_view` | CRM dashboard view |
+| `latest_acquisition_run_view` | Last dual-write run timestamp (dashboard “Last acquisition refresh”) |
+
+### Deferred views (Phase 5 — not in schema)
+
+| View | Purpose |
+|---|---|
 | `run_summary_view` | Operational metrics per run |
 | `source_effectiveness_view` | Source/query performance over time |
 
-Views should make the dashboard simple without forcing the physical schema to mimic CSV files.
+Dashboard analytics (Job Search Progression, Source Distribution, Pipeline analytics expander) are computed in-app from `historical_jobs_view` + visibility rules — not from deferred SQL views.
+
+### Dashboard Hiring Manager enrichment (Phase 3B)
+
+When an operator edits **Hiring Manager** in Job Listings with `SQLITE_DASHBOARD_WRITE=1`:
+
+| Table | Write behavior |
+|-------|----------------|
+| `jobs` | `hiring_manager` updated (current display for the job row) |
+| `recruiters` | Upsert by `recruiter_key` (`name.strip().lower()`); new rows get `source=job_editor` |
+| `recruiter_job_links` | **Append-only** — insert `(recruiter_id, job_id)` if missing; `UNIQUE(recruiter_id, job_id)` prevents duplicates; **no deletes** on HM change |
+
+Implementation: [`src/db/services/recruiter_enrichment.py`](../src/db/services/recruiter_enrichment.py) via [`dashboard_write.persist_dashboard_job_edits()`](../src/db/services/dashboard_write.py). CRM `jobs_connected` in `active_recruiters_view` counts live links from `recruiter_job_links`, not `jobs.hiring_manager` alone.
+
+Acquisition-time recruiter extract (Instahyre detail pages) uses the same tables via dual-write; dashboard HM edit is a separate job-bound path.
+
+**Outreach schema vs CRM UI:** `recruiters` stores `outreach_sent`, `recruiter_replied`, `last_outreach_date`, `last_response_date`, and `touchpoint_count` (normalized in dashboard loaders). The Streamlit CRM table does **not** surface these columns — operator edits are limited to recruiter stage and HM-driven enrichment today.
+
+### Dashboard write-back paths (D8B)
+
+| Operator action | Write path | Tables |
+|-----------------|------------|--------|
+| Job Listings pipeline stage / flags | `persist_dashboard_job_edits()` | `jobs`, `user_job_state` |
+| Hiring Manager edit (3B) | `sync_recruiter_from_hiring_manager()` | `jobs`, `recruiters`, `recruiter_job_links` |
+| Recruiter CRM stage edit | recruiter stage upsert in `dashboard_write.py` | `recruiters` |
+| Recommended Actions **Applied ✓** (3A.1) | `mark_job_applied()` | `user_job_state` (`pipeline_stage=Applied`, `applied=True`) |
+
+Implementation: [`src/db/services/dashboard_write.py`](../src/db/services/dashboard_write.py). Requires `SQLITE_DASHBOARD_WRITE=1`.
 
 ---
 
@@ -403,13 +481,15 @@ Dashboard reads from SQLite views by default (`SQLITE_READ=1`). CSV loaders are 
 
 ### Target state (achieved)
 
-Dashboard reads from views:
+Dashboard reads from views (default `SQLITE_READ=1`):
 
-- `current_jobs_view`
-- `latest_ai_evaluations_view`
-- `active_recruiters_view`
-- `run_summary_view`
-- `source_effectiveness_view`
+- `historical_jobs_view` — primary job memory (`dashboard_df` after visibility in `data_flow.py`)
+- `current_jobs_view` — latest acquisition export cohort
+- `latest_acquisition_run_view` — refresh timestamp
+- `active_recruiters_view` — CRM
+- `latest_ai_evaluations_view` — score/reason join
+
+Deferred (Phase 5): `run_summary_view`, `source_effectiveness_view`
 
 Conceptual dashboard tabs:
 
@@ -475,7 +555,7 @@ These decisions can wait until after SQLite schema validation:
 
 - Whether to keep every raw scraper payload.
 - How much AI prompt text to store.
-- Whether to version user profiles formally in DB (file-based profile today: `config/profiles/ai_candidate_profile.example.md`, overridable via `AI_CANDIDATE_PROFILE_PATH`).
+- Whether to version user profiles formally in DB (file-based v2 profile exists: `config/profiles/ai_candidate_profile.example.md`).
 - Whether to support multiple resumes/personas.
 - Whether recruiter identity should use name-only or richer matching.
 - Whether acquisition logs should live in DB or files.

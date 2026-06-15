@@ -35,7 +35,7 @@ install_one \
   "com.vasundhara-bisht.ai-job-agent.acquisition"
 
 echo ""
-echo "Acquisition agent: 07:00 and 19:00 local time."
+echo "Acquisition agent: 10:00 and 21:00 IST."
 echo "Manual test: launchctl kickstart -k ${DOMAIN}/com.vasundhara-bisht.ai-job-agent.acquisition"
 echo ""
 

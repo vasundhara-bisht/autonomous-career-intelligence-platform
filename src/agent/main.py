@@ -12,7 +12,7 @@ from scraper.greenhouse import scrape_greenhouse_jobs
 from scraper.lever import scrape_lever_jobs
 from scraper.linkedin import scrape_linkedin_jobs
 from scraper.linkedin_query_orchestrator import run_linkedin_acquisition_session
-from scraper.instahyre import scrape_instahyre_feed
+from scraper.instahyre import scrape_instahyre_feed, sync_instahyre_interested
 from scraper.instahyre_feed_orchestrator import run_instahyre_feed_session
 
 # =========================
@@ -45,6 +45,7 @@ from agent.historical_persistence import (
     load_historical_index,
     lookup_historical_row,
 )
+from agent.pipeline_stages import is_explicit_ai_status, is_user_managed_pipeline_stage
 from agent.job_identity import (
     generate_job_key_v2,
     instrument_jobs_identity_v2,
@@ -63,7 +64,9 @@ from db.services import (
     csv_runtime_counts,
     dual_write_runtime_snapshot,
     log_dual_write_summary,
+    persist_instahyre_interested_sync,
 )
+from db.services.parity import debug_dual_write_enabled
 from db.bootstrap import ensure_database_ready
 from db.config import sqlite_flag
 from db.read.engine import get_read_session
@@ -472,6 +475,9 @@ def _historical_job_needs_ai_fallback(h_row: dict) -> bool:
     ai_status = str(h_row.get("ai_status", "") or "").strip().lower()
     reason = str(h_row.get("reason", "")).strip()
 
+    if ai_status == "not_required":
+        return False
+
     if ai_status == "scored":
         return not reason
 
@@ -483,11 +489,37 @@ def _historical_job_needs_ai_fallback(h_row: dict) -> bool:
     return ai_score <= 0 or not reason
 
 
+_PROMOTABLE_PIPELINE_STAGES = {"", "New"}
+
+
+def _historical_bool(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("", "nan", "none"):
+        return False
+    return text in ("true", "1", "yes")
+
+
+def _historical_pipeline_stage(historical_row: dict) -> str:
+    return str(historical_row.get("pipeline_stage", "") or "").strip()
+
+
+def _is_operator_rejected_historical(historical_row: dict) -> bool:
+    if _historical_bool(historical_row.get("rejected")):
+        return True
+    return _historical_pipeline_stage(historical_row) == "Rejected"
+
+
 def materialize_fully_processed_job(job: dict, historical_row: dict) -> None:
     """
     Merge historical memory into the scrape dict for export/final merge.
     Scrape fields (title, company, link, recruiters, etc.) stay authoritative.
     """
+    scrape_applied = bool(job.get("applied"))
+
     raw_ai_score = historical_row.get("ai_score", "")
     has_ai_score = str(raw_ai_score).strip().lower() not in ("", "nan", "none")
     try:
@@ -502,7 +534,12 @@ def materialize_fully_processed_job(job: dict, historical_row: dict) -> None:
         job["reason"] = reason
 
     ai_status = str(historical_row.get("ai_status", "") or "").strip().lower()
-    job["ai_status"] = ai_status if ai_status else "scored"
+    if is_explicit_ai_status(ai_status):
+        job["ai_status"] = ai_status
+    elif is_user_managed_pipeline_stage(_historical_pipeline_stage(historical_row)):
+        job["ai_status"] = "not_required"
+    else:
+        job["ai_status"] = ai_status or "pending"
 
     for field in ("applied", "rejected"):
         if field not in historical_row:
@@ -519,6 +556,13 @@ def materialize_fully_processed_job(job: dict, historical_row: dict) -> None:
             job[field] = False
         elif isinstance(raw, bool):
             job[field] = raw
+
+    if (
+        scrape_applied
+        and not _is_operator_rejected_historical(historical_row)
+        and _historical_pipeline_stage(historical_row) in _PROMOTABLE_PIPELINE_STAGES
+    ):
+        job["applied"] = True
 
 
 def _production_final_merge_key(job: dict) -> str:
@@ -673,6 +717,34 @@ if __name__ == "__main__":
             traceback.print_exc()
             jobs_instahyre = []
 
+        # Phase B: Interested synchronization (state only; not added to all_jobs)
+        try:
+            interested_stubs, interested_stats = sync_instahyre_interested()
+            interested_report = persist_instahyre_interested_sync(interested_stubs)
+            print("\n🟣 INSTAHYRE INTERESTED SYNC SUMMARY")
+            print(f"  Cards harvested: {interested_stats.get('cards_harvested', 0)}")
+            print(f"  Stubs built: {interested_stats.get('stubs_built', 0)}")
+            print(f"  Skipped (no job_id): {interested_stats.get('skipped_no_job_id', 0)}")
+            print(f"  Duplicates skipped: {interested_stats.get('duplicates_skipped', 0)}")
+            if interested_report.get("enabled"):
+                print(f"  DB jobs upserted: {interested_report.get('upserted', 0)}")
+                print(f"  DB state updated: {interested_report.get('state_updated', 0)}")
+                print(
+                    f"  Observations written: {interested_report.get('observations_written', 0)}"
+                )
+                if interested_report.get("sync_run_id") is not None:
+                    print(f"  Sync run id: {interested_report.get('sync_run_id')}")
+                print(f"  Protected stages: {interested_report.get('protected_count', 0)}")
+                if interested_report.get("error"):
+                    print(f"  Sync DB error: {interested_report['error']}")
+            else:
+                print("  SQLite dual-write disabled — Interested sync not persisted")
+        except Exception as e:
+            import traceback
+
+            print(f"❌ Instahyre Interested sync failed: {e}")
+            traceback.print_exc()
+
     # =========================
     # 🔗 COMBINE ALL SOURCES
     # =========================
@@ -742,7 +814,10 @@ if __name__ == "__main__":
             brand_new_jobs.append(job)
             continue
 
-        if _historical_job_needs_ai_fallback(historical_row):
+        if is_user_managed_pipeline_stage(_historical_pipeline_stage(historical_row)):
+            materialize_fully_processed_job(job, historical_row)
+            fully_processed_jobs.append(job)
+        elif _historical_job_needs_ai_fallback(historical_row):
             needs_ai_only_jobs.append(job)
         else:
             materialize_fully_processed_job(job, historical_row)
@@ -1240,7 +1315,6 @@ if __name__ == "__main__":
     from db.write.csv_export import export_write_primary_csvs
 
     if write_primary_enabled():
-        print("\n  SQLite write-primary: CSV persistence gated by SQLITE_EXPORT_* flags")
         export_write_primary_csvs(
             export_historical=export_historical_csv_enabled(),
             export_descriptions=export_descriptions_csv_enabled(),
@@ -1257,12 +1331,13 @@ if __name__ == "__main__":
     # =========================
     update_recruiter_crm(session_export_jobs)
 
-    csv_counts = csv_runtime_counts()
-    csv_ai_dist = csv_ai_status_dist()
-    dual_write_report["csv_counts"] = {
-        **csv_counts,
-        "ai_status_scored": csv_ai_dist.get("scored", 0),
-        "ai_status_skipped_by_cap": csv_ai_dist.get("skipped_by_cap", 0),
-        "ai_status_pending": csv_ai_dist.get("pending", 0),
-    }
+    if debug_dual_write_enabled():
+        csv_counts = csv_runtime_counts()
+        csv_ai_dist = csv_ai_status_dist()
+        dual_write_report["csv_counts"] = {
+            **csv_counts,
+            "ai_status_scored": csv_ai_dist.get("scored", 0),
+            "ai_status_skipped_by_cap": csv_ai_dist.get("skipped_by_cap", 0),
+            "ai_status_pending": csv_ai_dist.get("pending", 0),
+        }
     log_dual_write_summary(dual_write_report)

@@ -1,6 +1,8 @@
 # SQLite Implementation Plan
 
-> **Migration complete (D8B, 2026-06-03).** For daily operations use [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md). For system status see [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md). This document is **design history + rollback reference**.
+> **Migration complete (D8B, 2026-06-03).** For daily operations use [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md). For system status see [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md). This document is **design history + rollback reference** — not the live operator guide.
+>
+> **Terminology:** **Phase B** in this document means the **CSV importer** (`import_csv_memory.py`). **Phase B Interested sync** in pipeline code (`instahyre.py`, `dual_write.py`) is a separate Instahyre post-acquisition feature — see [PROJECT_COMMAND_REFERENCE.md §5](./PROJECT_COMMAND_REFERENCE.md#5-instahyre-specific-controls).
 
 Execution-oriented companion to [SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md](./SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md).
 
@@ -115,7 +117,7 @@ Phase I  — Dashboard read switch (D1/D6)                        ✓
 Phase J  — SQLite source of truth (D8B)                         ✓
 ```
 
-Promotion status: D8B complete (2026-06). Operator-local validation logs are not shipped in the public clone.
+Promotion evidence: [`PRODUCT_STATUS_SUMMARY.md`](PRODUCT_STATUS_SUMMARY.md).
 
 ---
 
@@ -517,7 +519,7 @@ Extend existing profile-driven reset (`scripts/reset_runtime.py`) to truncate SQ
 - **D3 / Plan A (Checkpoint H): COMPLETE** (2026-06-03)
   - **3/3 consecutive clean DB-export runs:** acquisition runs **11, 12, 13** (run 10 failed — Playwright missing in agent env; legacy export fallback; does not count).
   - Each pass run: `jobs.csv export_mode=db_current_jobs_view`, dual-write `success=1`, zero export-time metadata WARNs, `validate_dual_write_parity.py --fail-on-error` PASS (including D2 METADATA PARITY).
-  - Evidence logs: operator-local log (run 11), operator-local log (run 12), operator-local log (run 13), operator-local log (run 14 hard-parity trial).
+  - Evidence logs: `logs/checkpoint-h-run-10-retry-20260603-014516.log` (run 11), `logs/checkpoint-h-run-11-20260603-015318.log` (run 12), `logs/checkpoint-h-run-12-20260603-020717.log` (run 13), `logs/checkpoint-h-metadata-hard-parity-20260603-024035.log` (run 14 hard-parity trial).
   - Optional: `SQLITE_METADATA_HARD_PARITY=1` trial run 14 — DB export PASS (no hard parity fallback).
   - Optional: `scripts/backfill_observation_query_runs.py --dry-run` on run 13 — `updated=0 skipped=36` (forward-only cohort already linked).
   - `SQLITE_METADATA_HARD_PARITY=1` remains opt-in (default WARN-only).
@@ -620,20 +622,25 @@ Dashboard reads CRM via `active_recruiters_view` and writes user/recruiter state
 
 **Validation:** bootstrap truncate on temp DB (all product tables empty); `export_csv_memory.py --dry-run --all` + `--mode source-of-truth --fail-on-error` PASS on production DB; `reset_runtime.py --profile bootstrap --dry-run` shows SQLite table list + row counts; acquisition profile preserves `jobs` row in unit test; SOT FAIL on intentional CSV drift (unit test).
 
-**Next:** Plan F (D8 promotion) superseded by D8A + D8B (completed in private production; evidence retained operator-local).
+**Next:** Plan F (D8 promotion) superseded by D8A + D8B — see `.cursor/plans/d8a_promotion_evidence_80e1f113.plan.md` and `.cursor/plans/d8b_sot_promotion_8176a003.plan.md`.
 
 ### Phase D8A — Promotion evidence validation ✅ COMPLETE
 
 Evidence-only phase; no default flag changes. Verdict: `READY_FOR_D8B`.
 
-- Readiness, cap drill (`DEBUG_LIMIT=2`, 66 `skipped_by_cap`), live recovery (archive → bootstrap → import PASS), `SQLITE_ENABLED=0` rollback, and opt-in promotion-stack runs — validated on operator hardware (logs not in this repo).
+- Readiness report: [`logs/d8a-promotion-readiness-20260603.md`](../logs/d8a-promotion-readiness-20260603.md)
+- Cap drill: `DEBUG_LIMIT=2`, 66 `skipped_by_cap` rows — `logs/d8a-cap-run-retry-20260603-052631.log`
+- Live recovery: archive → bootstrap reset → import → `--mode import` PASS
+- Rollback: `SQLITE_ENABLED=0` — `logs/d8a-rollback-20260603-131551.log`
+- Promotion stack (opt-in flags): `logs/d8a-promotion-stack-run-20260603-132141.log`
 
 ### Phase D8B — Source-of-truth promotion ✅ COMPLETE
 
 1. [`src/db/config.py`](../src/db/config.py) — defaults flipped: `SQLITE_ENABLED`, `DUAL_WRITE`, `PIPELINE_READ`, `WRITE_PRIMARY`, `READ`, `DASHBOARD_WRITE` → `True`; export historical/descriptions/CRM → `False`; jobs export → `True`.
 2. Documentation posture updated (§10b, README, §16).
-3. Post-flip smoke (no env overrides): acquisition + SOT validator PASS.
-4. Post-remediation: `sqlite_flag()` unified runtime gates; smoke re-run PASS.
+3. Post-flip smoke (no env overrides): `logs/d8b-post-flip-run-20260603-134740.log`, SOT PASS — `logs/d8b-post-flip-sot-20260603-134753.log`.
+4. Formal sign-off: [`docs/PRODUCT_STATUS_SUMMARY.md`](PRODUCT_STATUS_SUMMARY.md).
+5. Post-remediation flag-unification smoke: see `logs/d8b-remediation-post-flip-run-*.log` and `logs/d8b-remediation-sot-*.log` (after `sqlite_flag()` gate fix).
 
 **Next:** Optional CI wiring; Postgres migration (out of scope).
 
@@ -724,20 +731,20 @@ If any checkpoint fails: **stop**, roll back to last good flag combination (§11
 
 ## 16. Definition of Done — SQLite Becomes Source of Truth
 
-**Status: COMPLETE (D8B, 2026-06-03).** Evidence captured during private promotion (operator-local logs; not in public clone).
+**Status: COMPLETE (D8B, 2026-06-03).** Evidence: [`logs/d8a-promotion-readiness-20260603.md`](../logs/d8a-promotion-readiness-20260603.md), [`PRODUCT_STATUS_SUMMARY.md`](PRODUCT_STATUS_SUMMARY.md).
 
 SQLite is promoted from "shadow memory" to **source of truth**. All gates below satisfied:
 
 ### Technical gates
 
 - [x] MVP schema stable (no pending breaking Alembic revisions) — head `004_active_recruiters_view` (D8A T1).
-- [x] Importer produces DB matching CSV on a fresh archive restore (D8A T2/O1).
+- [x] Importer produces DB matching CSV on a fresh archive restore (D8A T2/O1; `logs/d8a-recovery-import-validate-20260603-051206.log`).
 - [x] **≥ 3** consecutive real acquisition runs with `SQLITE_DUAL_WRITE=1` and full parity PASS (runs 11–13, 2026-06-03).
-- [x] At least **1** run validated with `AI candidates > DEBUG_LIMIT` and correct `skipped_by_cap` persistence (D8A T4; 66 skipped in cap drill).
+- [x] At least **1** run validated with `AI candidates > DEBUG_LIMIT` and correct `skipped_by_cap` persistence (D8A T4; 66 skipped — `logs/d8a-cap-run-retry-20260603-052631.log`).
 - [x] Invariant: `persistence_cohort_count >= ai_scored_count` every run (D8A T5; validators LIFECYCLE PASS).
 - [x] Invariant: pending/skipped never blanks prior scored evaluation (D8A T6; cap cohort all brand-new; preservation logic in `historical_persistence.py`).
 - [x] Reset profile `bootstrap` clears SQLite + CSV consistently; auth preserved (D7 + D8A T7 live drill).
-- [x] `SQLITE_ENABLED=0` rollback verified on same machine (D8A T8).
+- [x] `SQLITE_ENABLED=0` rollback verified on same machine (D8A T8; `logs/d8a-rollback-20260603-131551.log`).
 
 ### Product gates
 

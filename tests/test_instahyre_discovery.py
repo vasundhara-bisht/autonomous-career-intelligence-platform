@@ -12,8 +12,10 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from scraper.instahyre import (  # noqa: E402
     _DEFAULT_MAX_JOBS_PER_FEED,
+    _FEED_ID_INTERESTED_SYNC,
     _FEED_ID_MATCHING_PERSONALIZED,
     _FEED_ID_PM_CURATED_SEARCH,
+    _INTERESTED_SYNC_URL,
     _FEED_PM_SEARCH_URL,
     _PAGINATED_FEED_IDS,
     _max_jobs_per_feed,
@@ -95,6 +97,13 @@ class InstahyreDiscoverySettingsTests(unittest.TestCase):
             "https://www.instahyre.com/job-12345/example/"
         )
         self.assertTrue(path.startswith("/job-12345"))
+
+    def test_interested_sync_uses_pagination_path(self) -> None:
+        self.assertIn(_FEED_ID_INTERESTED_SYNC, _PAGINATED_FEED_IDS)
+        settings = discovery_settings_for_feed(_FEED_ID_INTERESTED_SYNC)
+        self.assertEqual(settings.traversal_mode, "pagination")
+        self.assertFalse(uses_dom_first_harvest(_FEED_ID_INTERESTED_SYNC))
+        self.assertIn("status=1", _INTERESTED_SYNC_URL)
 
     def test_pm_feed_uses_pagination_path(self) -> None:
         for key in (

@@ -4,19 +4,43 @@ import altair as alt
 from datetime import date, datetime, timedelta
 
 import paths
+from agent.pipeline_stages import USER_MANAGED_PIPELINE_STAGES
 from db.read.engine import dashboard_read_enabled, dashboard_write_enabled
 from db.services.dashboard_write import (
     persist_dashboard_crm_edits,
     persist_dashboard_job_edits,
 )
+from data_flow import (
+    SidebarFilterState,
+    apply_activity_visibility,
+    apply_discovery_score_filter,
+    apply_sidebar_filters,
+    build_dashboard_df,
+    is_user_managed_stage,
+    sort_for_table,
+)
+from funnel import compute_progression_funnel_counts
+from funnel_workflow import (
+    JOB_SEARCH_PROGRESSION_TITLE,
+    render_job_search_progression_workflow,
+)
+from recruiter_funnel import compute_recruiter_progression_counts
+from recruiter_stages import CRM_STATUS_OPTIONS
+from recruiter_workflow import (
+    RECRUITER_RELATIONSHIP_PROGRESSION_TITLE,
+    render_recruiter_relationship_progression_workflow,
+)
+from recommended_actions_ui import render_recommended_actions_section
+from source_display import source_display_name
+from ui_help import inject_dashboard_help_css, render_subheader_with_help
 from loaders import (
-    apply_historical_display_columns,
     get_loader_diagnostics,
     load_dashboard_historical_df,
     load_dashboard_jobs_df,
     load_recruiter_crm_df,
     reset_loader_diagnostics,
 )
+from job_editor import job_editor_return_differs_input
 
 paths.migrate_legacy_root_runtime_files()
 
@@ -37,6 +61,12 @@ PIPELINE_STAGES = [
 DATE_RANGE_PRESETS = ("All time", "Last 7 days", "Last 30 days", "Custom")
 
 
+# Re-export for tests and backward compatibility.
+_is_user_managed_stage = is_user_managed_stage
+_apply_activity_visibility = apply_activity_visibility
+_apply_discovery_score_filter = apply_discovery_score_filter
+
+
 def _ensure_merge_key_columns(df: pd.DataFrame) -> pd.DataFrame:
     """V2-first merge key; legacy JOB_KEY fallback (matches pipeline identity model)."""
     out = df.copy()
@@ -48,10 +78,6 @@ def _ensure_merge_key_columns(df: pd.DataFrame) -> pd.DataFrame:
     v2 = out["JOB_KEY_V2"].fillna("").astype(str).str.strip()
     out["__merge_key"] = v2.where(v2 != "", leg)
     return out
-
-
-def _parse_dashboard_datetime(series: pd.Series) -> pd.Series:
-    return pd.to_datetime(series, errors="coerce")
 
 
 def _normalize_historical_state(df: pd.DataFrame) -> pd.DataFrame:
@@ -91,83 +117,19 @@ def _normalize_historical_state(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _merge_pipeline_stage(display_base: pd.DataFrame, historical: pd.DataFrame) -> pd.DataFrame:
-    """Attach pipeline_stage for sidebar Status filter (UI-only merge)."""
-    hist = _ensure_merge_key_columns(historical)
-    stage_cols = ["__merge_key", "pipeline_stage"]
-    if "pipeline_stage" not in hist.columns:
-        hist["pipeline_stage"] = "New"
-
-    out = _ensure_merge_key_columns(display_base)
-    out = out.merge(hist[stage_cols], on="__merge_key", how="left")
-    out["pipeline_stage"] = out["pipeline_stage"].fillna("New")
-    return out.drop(columns=["__merge_key"], errors="ignore")
-
-
-def _apply_date_range_filter(
-    df: pd.DataFrame,
-    *,
-    date_column: str,
-    preset: str,
-    custom_start,
-    custom_end,
-) -> pd.DataFrame:
-    if preset == "All time" or date_column not in df.columns:
-        return df
-
-    parsed = _parse_dashboard_datetime(df[date_column])
-    today = pd.Timestamp.now().normalize()
-
-    if preset == "Last 7 days":
-        start = today - pd.Timedelta(days=7)
-        end = today + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    elif preset == "Last 30 days":
-        start = today - pd.Timedelta(days=30)
-        end = today + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    elif preset == "Custom":
-        if not custom_start or not custom_end:
-            return df
-        start = pd.Timestamp(custom_start).normalize()
-        end = pd.Timestamp(custom_end).normalize() + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    else:
-        return df
-
-    mask = parsed.notna() & (parsed >= start) & (parsed <= end)
-    return df.loc[mask].copy()
-
-
 def score_badge(score, ai_status):
-    if str(ai_status or "").lower() != "scored":
+    status = str(ai_status or "").strip().lower()
+    if status == "not_required":
+        return "Not Required"
+    if status == "skipped_by_cap":
+        return "Skipped (cap)"
+    if status != "scored":
         return "Pending AI"
     if score >= 9:
         return f"🟢 {score}"
     if score >= 7:
         return f"🟡 {score}"
     return f"🔴 {score}"
-
-
-def _job_editor_return_differs_input(before_df, after_df):
-    cols = ["Status", "Notes"]
-    for c in cols:
-        if c not in before_df.columns or c not in after_df.columns:
-            continue
-        a = (
-            before_df[c]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .reset_index(drop=True)
-        )
-        b = (
-            after_df[c]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .reset_index(drop=True)
-        )
-        if not a.equals(b):
-            return True
-    return False
 
 
 def _path_mtime(path) -> float:
@@ -283,6 +245,7 @@ def _build_editor_df(
     display_df = display_df.loc[:, ~display_df.columns.duplicated()]
 
     editor_df = display_df.copy()
+    editor_df["source_key"] = editor_df["source"].fillna("").astype(str).str.strip()
     editor_df["ai_score_display"] = editor_df.apply(
         lambda row: score_badge(row["score"], row.get("ai_status")),
         axis=1,
@@ -297,12 +260,12 @@ def _build_editor_df(
             "hiring_manager": "Hiring Manager",
             "ai_score_display": "AI Score",
             "reason": "Reason",
-            "source": "Source",
             "link": "Link",
             "pipeline_stage": "Status",
             "notes": "Notes",
         }
     )
+    editor_df["Source"] = editor_df["source_key"].map(source_display_name)
     editor_df.insert(0, "#", range(1, len(editor_df) + 1))
 
     _editor_cols = [
@@ -315,6 +278,7 @@ def _build_editor_df(
         "Hiring Manager",
         "AI Score",
         "Reason",
+        "source_key",
         "Source",
         "Link",
         "Status",
@@ -323,6 +287,33 @@ def _build_editor_df(
     if "JOB_KEY_V2" in editor_df.columns:
         _editor_cols.insert(2, "JOB_KEY_V2")
     return editor_df[[c for c in _editor_cols if c in editor_df.columns]]
+
+
+def _render_recommended_actions(dashboard_df: pd.DataFrame) -> None:
+    render_recommended_actions_section(dashboard_df)
+
+
+def _render_job_search_progression(dashboard_df: pd.DataFrame) -> None:
+    st.markdown("---")
+    st.subheader(JOB_SEARCH_PROGRESSION_TITLE)
+
+    if dashboard_df.empty:
+        st.caption("No visible jobs in the dashboard cohort.")
+        return
+
+    counts = compute_progression_funnel_counts(dashboard_df)
+    render_job_search_progression_workflow(counts)
+
+
+def _render_recruiter_relationship_progression(recruiter_crm_df: pd.DataFrame) -> None:
+    st.markdown(f"#### {RECRUITER_RELATIONSHIP_PROGRESSION_TITLE}")
+
+    if recruiter_crm_df.empty:
+        st.caption("No recruiters in the CRM cohort.")
+        return
+
+    counts = compute_recruiter_progression_counts(recruiter_crm_df)
+    render_recruiter_relationship_progression_workflow(counts)
 
 
 def _render_pipeline_analytics(editor_df: pd.DataFrame) -> None:
@@ -343,11 +334,14 @@ def _render_pipeline_analytics(editor_df: pd.DataFrame) -> None:
         analytics_col4.metric("Rejected", total_rejected)
 
         if editor_df.empty:
-            st.caption("No jobs match the current filters.")
+            st.caption("No visible jobs in the dashboard cohort.")
             return
 
+        _source_group_col = (
+            "source_key" if "source_key" in editor_df.columns else "Source"
+        )
         source_summary_df = (
-            editor_df.groupby("Source")
+            editor_df.groupby(_source_group_col)
             .agg(
                 jobs=("JOB_KEY", "count"),
                 interviews=("Status", lambda x: (x == "Interview").sum()),
@@ -356,6 +350,10 @@ def _render_pipeline_analytics(editor_df: pd.DataFrame) -> None:
             )
             .reset_index()
         )
+        source_summary_df["Source"] = source_summary_df[_source_group_col].map(
+            source_display_name
+        )
+        source_summary_df = source_summary_df.drop(columns=[_source_group_col])
         source_summary_df["Interview Rate"] = (
             (source_summary_df["interviews"] / source_summary_df["jobs"]) * 100
         ).round(1)
@@ -418,21 +416,8 @@ recruiter_crm_df = load_recruiter_crm_df()
 
 historical_state_df = _normalize_historical_state(historical_state_df)
 
-historical_display_df = apply_historical_display_columns(historical_state_df.copy())
-if "currently_active" in historical_display_df.columns:
-    historical_display_df = historical_display_df[
-        historical_display_df["currently_active"] == True
-    ]
-
-if "pipeline_stage" not in historical_display_df.columns:
-    historical_display_df = _merge_pipeline_stage(
-        historical_display_df, historical_state_df
-    )
-else:
-    historical_display_df["pipeline_stage"] = (
-        historical_display_df["pipeline_stage"].fillna("New").astype(str).str.strip()
-    )
-_table_base_count = len(historical_display_df)
+dashboard_df = build_dashboard_df(historical_state_df)
+_table_base_count = len(dashboard_df)
 
 # =========================
 # SIDEBAR
@@ -476,57 +461,46 @@ if date_preset == "Custom":
         custom_start = custom_end = _picked
 
 locations = ["All"] + sorted(
-    historical_display_df["location"].dropna().unique().tolist()
+    dashboard_df["location"].dropna().unique().tolist()
 )
 selected_location = st.sidebar.selectbox("Location", locations)
 
-sources = sorted(historical_display_df["source"].dropna().unique().tolist())
-selected_sources = st.sidebar.multiselect("Source", sources, default=sources)
+sources = sorted(dashboard_df["source"].dropna().unique().tolist())
+selected_sources = st.sidebar.multiselect(
+    "Source",
+    sources,
+    default=sources,
+    format_func=source_display_name,
+)
 
 selected_statuses = st.sidebar.multiselect(
-    "Status",
+    "Job Status",
     PIPELINE_STAGES,
     default=PIPELINE_STAGES,
 )
 
 min_score = st.sidebar.slider("Minimum Score", 0, 10, 0)
+st.sidebar.caption("Minimum score applies to New and Saved jobs only.")
 
 recruiter_only = st.sidebar.checkbox("Has recruiter contact", value=False)
 
 # =========================
-# APPLY FILTERS
+# APPLY SIDEBAR FILTERS (TABLE / LIST VIEWS ONLY)
 # =========================
-filtered_df = historical_display_df.copy()
-
-filtered_df = _apply_date_range_filter(
-    filtered_df,
+_filter_state = SidebarFilterState(
     date_column=date_column,
-    preset=date_preset,
+    date_preset=date_preset,
     custom_start=custom_start if date_preset == "Custom" else None,
     custom_end=custom_end if date_preset == "Custom" else None,
+    selected_location=selected_location,
+    selected_sources=tuple(selected_sources),
+    selected_statuses=tuple(selected_statuses),
+    min_score=min_score,
+    recruiter_only=recruiter_only,
 )
+filtered_df = sort_for_table(apply_sidebar_filters(dashboard_df, _filter_state))
 
-if selected_location != "All":
-    filtered_df = filtered_df[filtered_df["location"] == selected_location]
-
-if selected_sources:
-    filtered_df = filtered_df[filtered_df["source"].isin(selected_sources)]
-
-if selected_statuses:
-    filtered_df = filtered_df[filtered_df["pipeline_stage"].isin(selected_statuses)]
-
-filtered_df = filtered_df[
-    (filtered_df["is_ai_scored"]) & (filtered_df["score"] >= min_score)
-]
-
-if recruiter_only:
-    filtered_df = filtered_df[filtered_df["hiring_manager"] != "Not Specified"]
-
-filtered_df = filtered_df.sort_values(
-    by=["is_ai_scored", "score", "JOB_KEY"],
-    ascending=[False, False, True],
-)
-
+dashboard_editor_df = _build_editor_df(dashboard_df, historical_state_df)
 editor_df = _build_editor_df(filtered_df, historical_state_df)
 _last_refresh_label = load_last_data_refresh_label(
     _use_sqlite, _db_mtime, _jobs_mtime
@@ -538,13 +512,24 @@ if "applied_jobs" not in st.session_state:
 # =========================
 # HEADER
 # =========================
+inject_dashboard_help_css()
 st.title(PRODUCT_TITLE)
-st.caption(f"Last refresh: {_last_refresh_label}")
+st.caption(f"Last acquisition refresh: {_last_refresh_label}")
 
 col1, col2, col3 = st.columns(3)
-col1.metric("Total Jobs", len(historical_state_df))
+col1.metric("Total Jobs", len(dashboard_df))
 col2.metric("Latest Acquisition", len(latest_acquisition_df))
 col3.metric("Total Recruiters", len(recruiter_crm_df))
+
+# =========================
+# RECOMMENDED ACTIONS
+# =========================
+_render_recommended_actions(dashboard_df)
+
+# =========================
+# JOB SEARCH PROGRESSION
+# =========================
+_render_job_search_progression(dashboard_df)
 
 # =========================
 # SOURCE DISTRIBUTION
@@ -552,23 +537,31 @@ col3.metric("Total Recruiters", len(recruiter_crm_df))
 st.markdown("---")
 st.subheader("Source Distribution")
 
-if filtered_df.empty:
-    st.caption("No jobs match the current filters.")
+if dashboard_df.empty:
+    st.caption("No visible jobs in the dashboard cohort.")
 else:
     source_counts = (
-        filtered_df["source"]
+        dashboard_df["source"]
         .value_counts()
         .reset_index()
     )
     source_counts.columns = ["source", "count"]
+    source_counts["source_label"] = source_counts["source"].map(source_display_name)
     source_chart = (
         alt.Chart(source_counts)
         .mark_bar()
         .encode(
-            y=alt.Y("source:N", sort="-x", title="Source"),
+            y=alt.Y(
+                "source_label:N",
+                sort=alt.EncodingSortField(field="count", order="descending"),
+                title="Source",
+            ),
             x=alt.X("count:Q", title="Jobs"),
-            tooltip=["source", "count"],
-            color=alt.Color("source:N", legend=None),
+            tooltip=[
+                alt.Tooltip("source_label:N", title="Source"),
+                alt.Tooltip("count:Q", title="Jobs"),
+            ],
+            color=alt.Color("source_label:N", legend=None),
         )
     )
     st.altair_chart(source_chart, width="stretch")
@@ -576,13 +569,22 @@ else:
 # =========================
 # PIPELINE ANALYTICS
 # =========================
-_render_pipeline_analytics(editor_df)
+_render_pipeline_analytics(dashboard_editor_df)
 
 # =========================
 # JOB LISTINGS
 # =========================
 st.markdown("---")
-st.subheader("Job Listings")
+render_subheader_with_help(
+    "Job Listings",
+    "Editing Hiring Manager updates the recruiter shown for this job.",
+    "Recruiter CRM retains historical recruiter relationships for the role.",
+)
+if not dashboard_write_enabled():
+    st.info(
+        "Hiring Manager enrichment requires SQLite dashboard writes "
+        "(SQLITE_DASHBOARD_WRITE=1)."
+    )
 _filtered_count = len(filtered_df)
 if _filtered_count < _table_base_count:
     st.caption(f"Showing {_filtered_count:,} of {_table_base_count:,} jobs")
@@ -614,6 +616,7 @@ edited_df = st.data_editor(
     column_config={
         "JOB_KEY": None,
         "JOB_KEY_V2": None,
+        "source_key": None,
         "#": st.column_config.NumberColumn("#", width="small", disabled=True),
         "Title": st.column_config.TextColumn("Title", width="large"),
         "Company": st.column_config.TextColumn("Company", width="medium"),
@@ -640,11 +643,12 @@ edited_df = st.data_editor(
         "Location",
         "Posted",
         "AI Score",
+        "Source",
         "Link",
     ],
 )
 
-_job_editor_dirty = _job_editor_return_differs_input(editor_df, edited_df)
+_job_editor_dirty = job_editor_return_differs_input(editor_df, edited_df)
 
 updated_states = []
 for _, row in edited_df.iterrows():
@@ -667,6 +671,9 @@ for _, row in edited_df.iterrows():
         "interview": interview_state,
         "offer": offer_state,
         "notes": str(row["Notes"]),
+        "hiring_manager": str(row["Hiring Manager"]),
+        "company": str(row.get("Company", "") or ""),
+        "source": str(row.get("source_key", "") or row.get("Source", "") or ""),
     }
     if "JOB_KEY_V2" in row.index:
         _state["JOB_KEY_V2"] = str(row["JOB_KEY_V2"]).strip()
@@ -675,7 +682,7 @@ for _, row in edited_df.iterrows():
 updated_df = pd.DataFrame(updated_states)
 
 if dashboard_write_enabled():
-    _job_rows_persisted = persist_dashboard_job_edits(updated_df)
+    _job_rows_persisted = persist_dashboard_job_edits(updated_df, prior_df=editor_df)
     if _job_rows_persisted and _job_editor_dirty:
         st.toast("Changes saved", icon="✅")
 else:
@@ -714,23 +721,19 @@ else:
         st.toast("Changes saved", icon="✅")
 
 # =========================
-# RECRUITER RELATIONSHIP MANAGER
+# RECRUITER RELATIONSHIP MANAGEMENT
 # =========================
 st.markdown("---")
-st.subheader("Recruiter Relationship Manager")
+st.subheader("Recruiter Relationship Management")
 
-crm_col1, crm_col2 = st.columns(2)
-crm_col1.metric(
-    "Active Recruiters",
-    int(recruiter_crm_df[recruiter_crm_df["currently_active"] == True].shape[0]),
-)
-crm_col2.metric(
-    "Recruiters Replied",
-    int(recruiter_crm_df[recruiter_crm_df["recruiter_replied"] == True].shape[0]),
-)
+st.metric("Total Recruiters", len(recruiter_crm_df))
+_render_recruiter_relationship_progression(recruiter_crm_df)
 
 display_crm_df = recruiter_crm_df.copy()
 display_crm_df.insert(0, "#", range(1, len(display_crm_df) + 1))
+display_crm_df["source_key"] = (
+    display_crm_df["source"].fillna("").astype(str).str.strip()
+)
 
 crm_editor_df = display_crm_df[
     [
@@ -743,18 +746,19 @@ crm_editor_df = display_crm_df[
         "last_seen",
         "jobs_connected",
         "recruiter_stage",
+        "source_key",
     ]
 ].rename(
     columns={
         "recruiter_name": "Recruiter",
         "current_company": "Company",
-        "source": "Source",
         "first_seen": "First Seen",
         "last_seen": "Last Seen",
         "jobs_connected": "Jobs Connected",
         "recruiter_stage": "Status",
     }
 )
+crm_editor_df["Source"] = crm_editor_df["source_key"].map(source_display_name)
 
 edited_crm_df = st.data_editor(
     crm_editor_df,
@@ -774,6 +778,7 @@ edited_crm_df = st.data_editor(
     ],
     column_config={
         "RECRUITER_KEY": None,
+        "source_key": None,
         "#": st.column_config.NumberColumn("#", width="small", disabled=True),
         "Recruiter": st.column_config.TextColumn("Recruiter", disabled=True),
         "Company": st.column_config.TextColumn("Company", disabled=True),
@@ -785,14 +790,7 @@ edited_crm_df = st.data_editor(
         ),
         "Status": st.column_config.SelectboxColumn(
             "Status",
-            options=[
-                "discovered",
-                "warm",
-                "active",
-                "responded",
-                "ghosted",
-                "archived",
-            ],
+            options=CRM_STATUS_OPTIONS,
             width="medium",
         ),
     },

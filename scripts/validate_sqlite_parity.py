@@ -25,6 +25,10 @@ for entry in (str(_REPO_ROOT), str(_SRC)):
         sys.path.insert(0, entry)
 
 import paths
+
+_CSV_AI_STATUS_KEYS = ("scored", "skipped_by_cap", "pending")
+_DB_AI_STATUS_KEYS = _CSV_AI_STATUS_KEYS + ("not_required",)
+
 from db.bootstrap import ensure_database_ready
 from db.engine import get_session
 from db.models.schema import (
@@ -118,11 +122,11 @@ def run_import_mode(*, fail_on_error: bool = False) -> int:
         print(f"  DB recruiters rows:         {db_recruiters}")
         print(
             "  ai_status CSV (historical): "
-            + ", ".join(f"{k}={csv_status.get(k, 0)}" for k in ("scored", "skipped_by_cap", "pending"))
+            + ", ".join(f"{k}={csv_status.get(k, 0)}" for k in _CSV_AI_STATUS_KEYS)
         )
         print(
             "  ai_status DB:               "
-            + ", ".join(f"{k}={db_status.get(k, 0)}" for k in ("scored", "skipped_by_cap", "pending"))
+            + ", ".join(f"{k}={db_status.get(k, 0)}" for k in _DB_AI_STATUS_KEYS)
         )
 
         print("\nLIFECYCLE INVARIANTS")
@@ -211,7 +215,7 @@ def run_production_mode(*, fail_on_error: bool = False) -> int:
         )
         print(
             "  ai_status DB (cumulative):   "
-            + ", ".join(f"{k}={db_status.get(k, 0)}" for k in ("scored", "skipped_by_cap", "pending"))
+            + ", ".join(f"{k}={db_status.get(k, 0)}" for k in _DB_AI_STATUS_KEYS)
         )
 
         print("\nDB HEALTH (strict)")
@@ -349,7 +353,7 @@ def run_csv_mirror_sync_mode(*, fail_on_error: bool = False) -> int:
         )
         print(
             "  ai_status DB (cumulative):   "
-            + ", ".join(f"{k}={db_status.get(k, 0)}" for k in ("scored", "skipped_by_cap", "pending"))
+            + ", ".join(f"{k}={db_status.get(k, 0)}" for k in _DB_AI_STATUS_KEYS)
         )
 
         print("\nLIFECYCLE INVARIANTS")
@@ -415,7 +419,7 @@ def run_post_dual_write_mode(*, fail_on_error: bool = False) -> int:
         )
         print(
             "  ai_status DB (cumulative):  "
-            + ", ".join(f"{k}={db_status.get(k, 0)}" for k in ("scored", "skipped_by_cap", "pending"))
+            + ", ".join(f"{k}={db_status.get(k, 0)}" for k in _DB_AI_STATUS_KEYS)
         )
 
         print("\nLIFECYCLE INVARIANTS")

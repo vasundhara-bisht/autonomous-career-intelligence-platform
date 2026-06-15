@@ -20,7 +20,7 @@ from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import Page, sync_playwright
 
-from agent.job_identity import extract_instahyre_job_id
+from agent.job_identity import extract_instahyre_job_id, generate_job_key_v2
 from scraper.instahyre_logging import (
     debug_dom_enabled,
     log_debug,
@@ -36,6 +36,8 @@ import paths
 _AUTH_PATH = str(paths.instahyre_auth_json())
 _ORIGIN = "https://www.instahyre.com"
 _FEED_MATCHING_URL = f"{_ORIGIN}/candidate/opportunities/?matching=true"
+# Phase B: Interested filter (status=1) — state sync only, not a discovery feed.
+_INTERESTED_SYNC_URL = f"{_ORIGIN}/candidate/opportunities/?matching=true&status=1"
 _FEED_PM_SEARCH_URL = (
     f"{_ORIGIN}/search-jobs?company_size=0&isLandingPage=true"
     f"&job_functions=%2Fapi%2Fv1%2Fjob_category%2F2&job_type=1"
@@ -52,8 +54,13 @@ _DETAIL_REJECT_PHRASES = (
 )
 _FEED_ID_MATCHING_PERSONALIZED = "matching_personalized"
 _FEED_ID_PM_CURATED_SEARCH = "pm_curated_search"
+_FEED_ID_INTERESTED_SYNC = "interested_sync"
 _PAGINATED_FEED_IDS = frozenset(
-    {_FEED_ID_MATCHING_PERSONALIZED, _FEED_ID_PM_CURATED_SEARCH}
+    {
+        _FEED_ID_MATCHING_PERSONALIZED,
+        _FEED_ID_PM_CURATED_SEARCH,
+        _FEED_ID_INTERESTED_SYNC,
+    }
 )
 
 # Effectively uncapped for paginated feeds; override via INSTAHYRE_MAX_JOBS_PER_FEED.
@@ -165,6 +172,8 @@ def discovery_settings_for_feed(feed_id: str) -> FeedDiscoverySettings:
             )
         return _paginated_discovery_settings(fid)
     if fid == _FEED_ID_PM_CURATED_SEARCH:
+        return _paginated_discovery_settings(fid)
+    if fid == _FEED_ID_INTERESTED_SYNC:
         return _paginated_discovery_settings(fid)
     return FeedDiscoverySettings(
         feed_id=fid,
@@ -2130,6 +2139,80 @@ def _detail_body_text(page: Page) -> str:
         return ""
 
 
+def _detail_applied_signals_present(
+    *,
+    has_apply_applied_class: bool = False,
+    body_text: str = "",
+    tooltip_texts: tuple[str, ...] = (),
+) -> bool:
+    """True when any verified Instahyre detail-page applied signal is present."""
+    if has_apply_applied_class:
+        return True
+    if "application sent!" in (body_text or "").lower():
+        return True
+    for tip in tooltip_texts:
+        if "already applied" in (tip or "").lower():
+            return True
+    return False
+
+
+def _parse_applied_signals_from_html(html: str) -> bool:
+    """Parse verified applied signals from HTML for unit tests (no Playwright)."""
+    has_class = bool(
+        re.search(
+            r'class="[^"]*\bapply\b[^"]*\bapplied\b[^"]*"',
+            html,
+            flags=re.IGNORECASE,
+        )
+    )
+    tooltip_texts: list[str] = []
+    for attr in ("tooltip-text", "data-original-title"):
+        tooltip_texts.extend(
+            re.findall(
+                rf'{attr}="([^"]*)"',
+                html,
+                flags=re.IGNORECASE,
+            )
+        )
+    body_text = re.sub(r"<[^>]+>", " ", html)
+    return _detail_applied_signals_present(
+        has_apply_applied_class=has_class,
+        body_text=body_text,
+        tooltip_texts=tuple(tooltip_texts),
+    )
+
+
+def _detect_applied_on_detail_page(page: Page) -> bool:
+    """Detect Instahyre applied state from the open job detail page."""
+    has_apply_applied_class = False
+    try:
+        has_apply_applied_class = page.locator("div.apply.applied").count() > 0
+    except Exception:
+        pass
+
+    body_text = ""
+    try:
+        body_text = page.locator("body").inner_text() or ""
+    except Exception:
+        pass
+
+    tooltip_texts: list[str] = []
+    for attr in ("tooltip-text", "data-original-title"):
+        try:
+            for element in page.locator(f"[{attr}]").all():
+                value = element.get_attribute(attr) or ""
+                if value:
+                    tooltip_texts.append(value)
+        except Exception:
+            continue
+
+    return _detail_applied_signals_present(
+        has_apply_applied_class=has_apply_applied_class,
+        body_text=body_text,
+        tooltip_texts=tuple(tooltip_texts),
+    )
+
+
 def _validate_detail_page(page: Page, card: OpportunityCard) -> str | None:
     """Return rejection reason or None if valid."""
     url = page.url or ""
@@ -2381,6 +2464,7 @@ def _build_job_from_card(page: Page, card: OpportunityCard) -> dict | None:
         )
     recruiter_name = posted_by.get("recruiter_name") or "Not Specified"
     hiring_manager = recruiter_name
+    applied = _detect_applied_on_detail_page(page)
 
     return {
         "title": title,
@@ -2399,7 +2483,7 @@ def _build_job_from_card(page: Page, card: OpportunityCard) -> dict | None:
         "recruiter_title": posted_by.get("recruiter_title", ""),
         "recruiter_company": posted_by.get("recruiter_company", ""),
         "recruiter_profile": posted_by.get("recruiter_profile", ""),
-        "applied": False,
+        "applied": applied,
         "score": 0,
         "instahyre_job_id": jid,
         "instahyre_opportunity_url": card.opportunity_url_path,
@@ -2541,6 +2625,137 @@ def scrape_instahyre_feed(
     log_ok(f"✅ Unique jobs collected: {len(jobs)}")
     log_debug(f"[debug] feed duration_sec={feed_stats['duration_sec']}")
     return jobs, feed_stats
+
+
+def _ensure_interested_filter_selected(page: Page) -> None:
+    """Fallback: click Interested sidebar if URL param did not select the filter."""
+    probe = page.evaluate(
+        """
+        () => {
+          const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+          const interested = radios.find((r) => {
+            const label = r.id
+              ? document.querySelector(`label[for="${r.id}"]`)
+              : r.closest('label');
+            return label && /^interested$/i.test((label.innerText || '').trim());
+          });
+          if (interested && !interested.checked) {
+            const label = interested.id
+              ? document.querySelector(`label[for="${interested.id}"]`)
+              : interested.closest('label');
+            if (label) {
+              label.click();
+              return { clicked: true };
+            }
+          }
+          return {
+            clicked: false,
+            status_param: new URLSearchParams(location.search).get('status'),
+          };
+        }
+        """
+    )
+    if isinstance(probe, dict) and probe.get("clicked"):
+        page.wait_for_timeout(2000)
+        log_debug("[debug] interested_sync: selected Interested via sidebar click")
+
+
+def _build_interested_sync_stub(card: OpportunityCard) -> dict | None:
+    """Minimal list-only job dict for Phase B Interested synchronization."""
+    job_id = str(card.job_id or "").strip()
+    if not job_id:
+        return None
+    run_ts = datetime.now(timezone.utc).isoformat()
+    stub: dict[str, Any] = {
+        "title": card.title,
+        "company": card.company,
+        "location": card.location,
+        "link": card.canonical_url,
+        "source": "instahyre",
+        "applied": True,
+        "instahyre_job_id": job_id,
+        "instahyre_opportunity_url": card.opportunity_url_path,
+        "instahyre_feed_id": _FEED_ID_INTERESTED_SYNC,
+        "instahyre_query_id": _FEED_ID_INTERESTED_SYNC,
+        "instahyre_query_label": "Instahyre Interested Sync",
+        "instahyre_query_role": "state_sync",
+        "instahyre_run_ts": run_ts,
+        "currently_active": True,
+    }
+    v2, identity_source = generate_job_key_v2(stub)
+    if not v2:
+        return None
+    stub["JOB_KEY_V2"] = v2
+    stub["identity_source"] = identity_source or "instahyre_id"
+    return stub
+
+
+def sync_instahyre_interested() -> tuple[list[dict], dict[str, Any]]:
+    """
+    Phase B: Interested list synchronization (Instahyre only).
+
+    Business rule: membership in the Interested filter = Applied.
+    List-only harvest — no detail pages, no AI, no Stage-1.
+    """
+    stubs: list[dict] = []
+    stats: dict[str, Any] = {
+        "phase": "interested_sync",
+        "cards_harvested": 0,
+        "stubs_built": 0,
+        "skipped_no_job_id": 0,
+        "duplicates_skipped": 0,
+        "duration_sec": 0.0,
+    }
+    t0 = time.monotonic()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False, slow_mo=400)
+        context = _new_authenticated_context(browser)
+        page = context.new_page()
+
+        log_ok("\n🟣 INSTAHYRE INTERESTED SYNC STARTED")
+        log_debug(f"[debug] interested_sync url={_INTERESTED_SYNC_URL}")
+
+        page.goto(_INTERESTED_SYNC_URL, timeout=60000, wait_until="domcontentloaded")
+        _assert_candidate_session(page)
+        _ensure_interested_filter_selected(page)
+
+        cards, harvest_metrics = _collect_feed_opportunity_cards(
+            page, feed_id=_FEED_ID_INTERESTED_SYNC
+        )
+        stats.update(harvest_metrics)
+        stats["cards_harvested"] = len(cards)
+        log_ok(f"✅ Interested opportunity cards found: {len(cards)}")
+
+        seen_ids: set[str] = set()
+        for card in cards:
+            if not str(card.job_id or "").strip():
+                stats["skipped_no_job_id"] = int(stats["skipped_no_job_id"]) + 1
+                log_warn(
+                    f"⚠️ Interested sync skip: missing job_id "
+                    f"({card.title} — {card.company})"
+                )
+                continue
+            if card.job_id in seen_ids:
+                stats["duplicates_skipped"] = int(stats["duplicates_skipped"]) + 1
+                continue
+            seen_ids.add(card.job_id)
+
+            stub = _build_interested_sync_stub(card)
+            if not stub:
+                stats["skipped_no_job_id"] = int(stats["skipped_no_job_id"]) + 1
+                continue
+            stubs.append(stub)
+
+        stats["stubs_built"] = len(stubs)
+        stats["duration_sec"] = round(time.monotonic() - t0, 1)
+        log_ok(f"✅ Interested sync stubs built: {len(stubs)}")
+        log_debug(f"[debug] interested_sync duration_sec={stats['duration_sec']}")
+
+        context.close()
+        browser.close()
+
+    return stubs, stats
 
 
 def scrape_instahyre_jobs(

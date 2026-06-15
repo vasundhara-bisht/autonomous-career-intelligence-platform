@@ -15,6 +15,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 import paths
+from agent.pipeline_stages import is_user_managed_pipeline_stage
 from db.bootstrap import ensure_database_ready
 from db.config import sqlite_flag
 from db.engine import get_session
@@ -75,6 +76,80 @@ def _as_bool(value: Any, *, default: bool = False) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+_PROMOTABLE_PIPELINE_STAGES = {"", "New"}
+_PROTECTED_PIPELINE_STAGES = {
+    "Saved",
+    "Applied",
+    "HR Screen",
+    "Interview",
+    "Final Round",
+    "Offer",
+    "Rejected",
+    "Ghosted",
+}
+
+
+def _normalize_pipeline_stage(stage: Any) -> str:
+    return str(stage or "").strip()
+
+
+def _is_promotable_pipeline_stage(stage: str) -> bool:
+    return _normalize_pipeline_stage(stage) in _PROMOTABLE_PIPELINE_STAGES
+
+
+def _user_job_state_snapshot(existing: UserJobState) -> dict[str, Any]:
+    return {
+        "applied": bool(existing.applied),
+        "rejected": bool(existing.rejected),
+        "interview": bool(existing.interview),
+        "offer": bool(existing.offer),
+        "pipeline_stage": existing.pipeline_stage,
+        "notes": existing.notes,
+        "updated_at": _now_utc_naive(),
+    }
+
+
+def _merge_user_job_state_payload(
+    existing: UserJobState | None,
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    incoming_applied = _as_bool(row.get("applied"), default=False)
+
+    if existing is None:
+        return {
+            "applied": incoming_applied,
+            "rejected": _as_bool(row.get("rejected"), default=False),
+            "interview": _as_bool(row.get("interview"), default=False),
+            "offer": _as_bool(row.get("offer"), default=False),
+            "pipeline_stage": "Applied" if incoming_applied else "New",
+            "notes": _as_text(row.get("notes")),
+            "updated_at": _now_utc_naive(),
+        }
+
+    existing_stage = _normalize_pipeline_stage(existing.pipeline_stage)
+    if existing.rejected or existing_stage == "Rejected":
+        return _user_job_state_snapshot(existing)
+
+    if incoming_applied and _is_promotable_pipeline_stage(existing_stage):
+        return {
+            "applied": True,
+            "rejected": bool(existing.rejected),
+            "interview": bool(existing.interview),
+            "offer": bool(existing.offer),
+            "pipeline_stage": "Applied",
+            "notes": existing.notes,
+            "updated_at": _now_utc_naive(),
+        }
+
+    if existing_stage in _PROTECTED_PIPELINE_STAGES:
+        return _user_job_state_snapshot(existing)
+
+    if not incoming_applied:
+        return _user_job_state_snapshot(existing)
+
+    return _user_job_state_snapshot(existing)
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -212,7 +287,7 @@ def _upsert_acquisition_query_runs(
             qlabel = _as_text(row.get("instahyre_query_label")) or _as_text(
                 row.get("instahyre_feed_label")
             )
-            qrole = "feed"
+            qrole = _as_text(row.get("instahyre_query_role")) or "feed"
             qgroup = None
             fprofile = None
             ts = _parse_ts(row.get("instahyre_run_ts"))
@@ -306,6 +381,35 @@ def _upsert_job_observations(
     return count
 
 
+def _next_observation_times_seen(session: Session, job_id: int) -> int:
+    prior = session.execute(
+        select(func.max(JobObservation.times_seen)).where(
+            JobObservation.job_id == job_id
+        )
+    ).scalar_one_or_none()
+    if prior is None:
+        return 1
+    return int(prior) + 1
+
+
+def _enrich_observation_jobs(
+    session: Session,
+    *,
+    jobs: list[dict[str, Any]],
+    job_id_by_v2: dict[str, int],
+) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for row in jobs:
+        v2 = _as_text(row.get("JOB_KEY_V2")) or ""
+        job_id = job_id_by_v2.get(v2)
+        if not job_id:
+            continue
+        payload = dict(row)
+        payload["times_seen"] = _next_observation_times_seen(session, job_id)
+        enriched.append(payload)
+    return enriched
+
+
 def _upsert_ai_evaluations(
     session: Session,
     *,
@@ -336,12 +440,102 @@ def _upsert_ai_evaluations(
         }
         existing_id = existing.get(job_id)
         if existing_id:
+            current = session.execute(
+                select(AiEvaluation.ai_status).where(AiEvaluation.id == existing_id)
+            ).scalar_one_or_none()
+            if (
+                str(current or "").strip().lower() == "not_required"
+                and status == "pending"
+            ):
+                continue
             session.query(AiEvaluation).filter(AiEvaluation.id == existing_id).update(payload)
         else:
             session.add(AiEvaluation(**payload))
         status_dist[status] += 1
         count += 1
     return count, status_dist
+
+
+def _upsert_not_required_ai_evaluation(
+    session: Session,
+    *,
+    run_id: int,
+    job_id: int,
+    model: str = "instahyre_interested_sync",
+) -> bool:
+    """
+    Mark a job as intentionally excluded from AI scoring.
+
+    Canonical API for CRM/sync flows that create jobs in user-managed stages.
+    Does not clobber an existing scored evaluation.
+    """
+    existing = session.execute(
+        select(AiEvaluation).where(AiEvaluation.job_id == job_id)
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing_status = str(existing.ai_status or "").strip().lower()
+        if existing_status in {"scored", "not_required"}:
+            return False
+        session.query(AiEvaluation).filter(AiEvaluation.id == existing.id).update(
+            {
+                "run_id": run_id,
+                "ai_status": "not_required",
+                "ai_score": None,
+                "reason": "",
+                "model": model,
+                "evaluated_at": _now_utc_naive(),
+            }
+        )
+        return True
+
+    session.add(
+        AiEvaluation(
+            job_id=job_id,
+            run_id=run_id,
+            ai_status="not_required",
+            ai_score=None,
+            reason="",
+            model=model,
+            evaluated_at=_now_utc_naive(),
+        )
+    )
+    return True
+
+
+def _upsert_not_required_ai_evaluations_for_user_managed_jobs(
+    session: Session,
+    *,
+    run_id: int,
+    job_id_by_v2: dict[str, int],
+    jobs: list[dict[str, Any]],
+    model: str = "instahyre_interested_sync",
+) -> int:
+    job_ids = [jid for jid in job_id_by_v2.values() if jid]
+    states_by_job_id: dict[int, UserJobState] = {}
+    if job_ids:
+        for state in session.execute(
+            select(UserJobState).where(UserJobState.job_id.in_(job_ids))
+        ).scalars():
+            states_by_job_id[int(state.job_id)] = state
+
+    written = 0
+    for row in jobs:
+        v2 = _as_text(row.get("JOB_KEY_V2")) or ""
+        job_id = job_id_by_v2.get(v2)
+        if not job_id:
+            continue
+        state = states_by_job_id.get(job_id)
+        if state is None:
+            stage = "Applied" if _as_bool(row.get("applied"), default=False) else "New"
+        else:
+            stage = _normalize_pipeline_stage(state.pipeline_stage)
+        if not is_user_managed_pipeline_stage(stage):
+            continue
+        if _upsert_not_required_ai_evaluation(
+            session, run_id=run_id, job_id=job_id, model=model
+        ):
+            written += 1
+    return written
 
 
 def _upsert_job_descriptions(
@@ -383,23 +577,30 @@ def _upsert_user_job_state(
     jobs: list[dict[str, Any]],
     job_id_by_v2: dict[str, int],
 ) -> int:
-    existing_job_ids = set(session.execute(select(UserJobState.job_id)).scalars().all())
+    job_ids = [
+        job_id_by_v2.get(_as_text(row.get("JOB_KEY_V2")) or "")
+        for row in jobs
+    ]
+    job_ids = [jid for jid in job_ids if jid]
+    existing_by_job_id: dict[int, UserJobState] = {}
+    if job_ids:
+        for state in session.execute(
+            select(UserJobState).where(UserJobState.job_id.in_(job_ids))
+        ).scalars():
+            existing_by_job_id[int(state.job_id)] = state
+
     count = 0
     for row in jobs:
         v2 = _as_text(row.get("JOB_KEY_V2"))
         job_id = job_id_by_v2.get(v2 or "")
         if not job_id:
             continue
-        payload = {
-            "applied": _as_bool(row.get("applied"), default=False),
-            "rejected": _as_bool(row.get("rejected"), default=False),
-            "interview": _as_bool(row.get("interview"), default=False),
-            "offer": _as_bool(row.get("offer"), default=False),
-            "pipeline_stage": _as_text(row.get("pipeline_stage")),
-            "notes": _as_text(row.get("notes")),
-            "updated_at": _now_utc_naive(),
-        }
-        if job_id in existing_job_ids:
+        payload = _merge_user_job_state_payload(
+            existing_by_job_id.get(job_id),
+            row,
+        )
+        existing = existing_by_job_id.get(job_id)
+        if existing is not None:
             session.query(UserJobState).filter(UserJobState.job_id == job_id).update(payload)
         else:
             session.add(UserJobState(job_id=job_id, **payload))
@@ -541,6 +742,143 @@ def _count_rows(session: Session) -> dict[str, int]:
             select(func.count()).select_from(UserJobState)
         ).scalar_one(),
     }
+
+
+def persist_instahyre_interested_sync(
+    jobs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Phase B persistence: upsert jobs, user_job_state, and lightweight observations.
+
+    Instahyre Interested sync bypasses AI evaluations, descriptions, and
+    recruiters. Observations use a dedicated early acquisition_run so export
+    cohort semantics remain tied to the end-of-pipeline dual-write run.
+    """
+    report: dict[str, Any] = {
+        "enabled": _dual_write_enabled(),
+        "success": False,
+        "error": "",
+        "harvested": len(jobs),
+        "upserted": 0,
+        "state_updated": 0,
+        "observations_written": 0,
+        "sync_run_id": None,
+        "skipped_no_id": 0,
+        "protected_count": 0,
+        "not_required_evals_written": 0,
+    }
+    if not _dual_write_enabled():
+        return report
+
+    valid_jobs: list[dict[str, Any]] = []
+    for row in jobs:
+        v2 = _as_text(row.get("JOB_KEY_V2"))
+        if v2:
+            valid_jobs.append(row)
+        else:
+            report["skipped_no_id"] = int(report["skipped_no_id"]) + 1
+
+    if not valid_jobs:
+        report["success"] = True
+        return report
+
+    try:
+        ensure_database_ready()
+        with get_session() as session:
+            assert isinstance(session, Session)
+            job_ids_prefetch = [
+                jid
+                for jid in (
+                    session.execute(select(Job.job_key_v2, Job.id)).all()
+                )
+            ]
+            job_key_to_id = dict(job_ids_prefetch)
+
+            existing_states: dict[int, UserJobState] = {}
+            prefetch_ids = [
+                job_key_to_id.get(_as_text(row.get("JOB_KEY_V2")) or "")
+                for row in valid_jobs
+            ]
+            prefetch_ids = [jid for jid in prefetch_ids if jid]
+            if prefetch_ids:
+                for state in session.execute(
+                    select(UserJobState).where(UserJobState.job_id.in_(prefetch_ids))
+                ).scalars():
+                    existing_states[int(state.job_id)] = state
+
+            protected = 0
+            for row in valid_jobs:
+                v2 = _as_text(row.get("JOB_KEY_V2")) or ""
+                job_id = job_key_to_id.get(v2)
+                if not job_id:
+                    continue
+                existing = existing_states.get(job_id)
+                if existing is None:
+                    continue
+                existing_stage = _normalize_pipeline_stage(existing.pipeline_stage)
+                if existing.rejected or existing_stage == "Rejected":
+                    protected += 1
+                elif existing_stage in _PROTECTED_PIPELINE_STAGES:
+                    if not (
+                        _as_bool(row.get("applied"), default=False)
+                        and _is_promotable_pipeline_stage(existing_stage)
+                    ):
+                        protected += 1
+            report["protected_count"] = protected
+
+            job_id_by_v2, jobs_upserted = _upsert_jobs(session, valid_jobs)
+            report["upserted"] = jobs_upserted
+            report["state_updated"] = _upsert_user_job_state(
+                session,
+                jobs=valid_jobs,
+                job_id_by_v2=job_id_by_v2,
+            )
+
+            sync_started = _now_utc_naive()
+            sync_ctx = DualWriteContext(
+                run_started_at=sync_started,
+                run_completed_at=_now_utc_naive(),
+                run_notes="instahyre_interested_sync",
+            )
+            sync_run_id = _upsert_acquisition_runs(session, sync_ctx)
+            observation_jobs = _enrich_observation_jobs(
+                session,
+                jobs=valid_jobs,
+                job_id_by_v2=job_id_by_v2,
+            )
+            _, query_run_id_by_key = _upsert_acquisition_query_runs(
+                session,
+                run_id=sync_run_id,
+                jobs=observation_jobs,
+                run_started_at=sync_ctx.run_started_at,
+                run_completed_at=sync_ctx.run_completed_at,
+            )
+            observations_written = _upsert_job_observations(
+                session,
+                run_id=sync_run_id,
+                jobs=observation_jobs,
+                job_id_by_v2=job_id_by_v2,
+                query_run_id_by_key=query_run_id_by_key,
+            )
+            report["observations_written"] = observations_written
+            report["sync_run_id"] = sync_run_id
+            report["not_required_evals_written"] = (
+                _upsert_not_required_ai_evaluations_for_user_managed_jobs(
+                    session,
+                    run_id=sync_run_id,
+                    job_id_by_v2=job_id_by_v2,
+                    jobs=valid_jobs,
+                )
+            )
+
+            session.commit()
+            report["success"] = True
+            return report
+    except Exception as exc:
+        report["error"] = repr(exc)
+        if _fail_on_error_enabled():
+            raise
+        return report
 
 
 def dual_write_runtime_snapshot(

@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import os
 from collections import Counter
 from typing import Any
 
 import pandas as pd
 
 import paths
+
+
+def debug_dual_write_enabled() -> bool:
+    return os.environ.get("DEBUG_DUAL_WRITE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _read_csv(path) -> pd.DataFrame:
@@ -57,11 +67,12 @@ def log_dual_write_summary(report: dict[str, Any]) -> None:
     if report.get("error"):
         print(f"error={report.get('error')}")
 
-    csv_counts = report.get("csv_counts") or {}
-    if csv_counts:
-        print("\nCSV counts:")
-        for k, v in csv_counts.items():
-            print(f"  {k}: {v}")
+    if debug_dual_write_enabled():
+        csv_counts = report.get("csv_counts") or {}
+        if csv_counts:
+            print("\nCSV counts:")
+            for k, v in csv_counts.items():
+                print(f"  {k}: {v}")
 
     write_counts = report.get("db_write_counts") or {}
     if write_counts:
@@ -81,7 +92,7 @@ def log_dual_write_summary(report: dict[str, Any]) -> None:
             "\nai_status (DB write dist): "
             + ", ".join(
                 f"{k}={ai_dist.get(k, 0)}"
-                for k in ("scored", "skipped_by_cap", "pending")
+                for k in ("scored", "skipped_by_cap", "pending", "not_required")
             )
         )
 

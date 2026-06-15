@@ -189,6 +189,76 @@ class ValidationModeParityTests(unittest.TestCase):
                 )
         self.assertTrue(report.ok(), report.failures)
 
+    def _write_historical_with_stale_acme(self, valid_key: str = "v2:test:validation:1") -> None:
+        pd.DataFrame(
+            [
+                {
+                    "JOB_KEY": "pm::acme",
+                    "JOB_KEY_V2": "v2:greenhouse:acme:exp1",
+                    "title": "PM",
+                    "company": "Acme",
+                    "ai_status": "scored",
+                    "ai_score": "8.0",
+                },
+                {
+                    "JOB_KEY": "legacy-key",
+                    "JOB_KEY_V2": valid_key,
+                    "title": "PM",
+                    "company": "Co",
+                    "ai_status": "scored",
+                    "ai_score": "7.0",
+                },
+            ]
+        ).to_csv(self.historical_path, index=False)
+
+    def test_production_warns_stale_historical_keys_when_export_off(self) -> None:
+        from db.bootstrap import ensure_database_ready
+        from db.engine import get_session
+        from db.services.parity_checks import check_production_cumulative_health, read_csv
+
+        key = "v2:test:validation:1"
+        self._seed_db_job(key)
+        self._write_historical_with_stale_acme(key)
+
+        with self._patch_paths():
+            ensure_database_ready()
+            historical = read_csv(self.historical_path)
+            with get_session() as session:
+                result = check_production_cumulative_health(session, historical)
+
+        self.assertTrue(result.ok(), result.failures)
+        self.assertTrue(
+            any("historical JOB_KEY_V2" in w and "acme:exp1" in w for w in result.warnings),
+            result.warnings,
+        )
+        self.assertTrue(
+            any("SQLITE_EXPORT_HISTORICAL_CSV=0" in w for w in result.warnings),
+            result.warnings,
+        )
+
+    def test_production_fails_stale_historical_keys_when_export_on(self) -> None:
+        from db.bootstrap import ensure_database_ready
+        from db.engine import get_session
+        from db.services.parity_checks import check_production_cumulative_health, read_csv
+
+        key = "v2:test:validation:1"
+        self._seed_db_job(key)
+        self._write_historical_with_stale_acme(key)
+
+        with mock.patch.dict(os.environ, {"SQLITE_EXPORT_HISTORICAL_CSV": "1"}, clear=False):
+            _clear_db_caches()
+            with self._patch_paths():
+                ensure_database_ready()
+                historical = read_csv(self.historical_path)
+                with get_session() as session:
+                    result = check_production_cumulative_health(session, historical)
+
+        self.assertFalse(result.ok())
+        self.assertTrue(
+            any("historical JOB_KEY_V2" in f and "acme:exp1" in f for f in result.failures),
+            result.failures,
+        )
+
     def test_production_fails_on_orphan_recruiter_link(self) -> None:
         from sqlalchemy import text
 

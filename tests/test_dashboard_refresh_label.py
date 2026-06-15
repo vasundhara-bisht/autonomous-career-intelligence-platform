@@ -1,4 +1,4 @@
-"""Tests for dashboard Last refresh timezone display."""
+"""Tests for dashboard Last acquisition refresh timezone display."""
 
 from __future__ import annotations
 
