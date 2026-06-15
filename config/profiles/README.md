@@ -6,7 +6,7 @@ Canonical candidate identity and preferences for **OpenAI batch scoring** in the
 
 | File | Purpose |
 |------|---------|
-| [`ai_candidate_profile_v2.md`](ai_candidate_profile_v2.md) | Production profile (target roles, industries, positive/negative signals) |
+| [`ai_candidate_profile.example.md`](ai_candidate_profile.example.md) | Bundled example persona (target roles, industries, positive/negative signals) |
 
 Resolved by [`paths.ai_candidate_profile_path()`](../../src/paths.py) unless overridden.
 
@@ -34,17 +34,17 @@ Those live in [`src/agent/ai_batch_scorer.py`](../../src/agent/ai_batch_scorer.p
 
 ## Editing workflow
 
-1. Edit `ai_candidate_profile_v2.md` (or your override path).
+1. Copy `ai_candidate_profile.example.md` to your own file (e.g. `my_profile.md`), edit, then set `AI_CANDIDATE_PROFILE_PATH`.
 2. Run acquisition — profile is loaded once at the start of AI scoring.
 3. Terminal logs show path and character count, e.g. `Candidate profile: ... (4177 chars)`.
 
 ## Token impact
 
-The v2 profile is ~4,000+ characters (~1,000 tokens) per batch request, in addition to job descriptions and the fixed instruction block. Shorter profiles reduce cost; longer profiles improve fit specificity.
+The example profile is ~4,000+ characters (~1,000 tokens) per batch request, in addition to job descriptions and the fixed instruction block. Shorter profiles reduce cost; longer profiles improve fit specificity.
 
-## Portfolio / public repos
+## Clone and publish guidance
 
-Replace personal data before publishing. Use a generic example profile or omit the file and document `AI_CANDIDATE_PROFILE_PATH` in [docs/PUBLIC_REPO.md](../../docs/PUBLIC_REPO.md).
+This is the portfolio repository. For first-time setup see [docs/CLONE_SETUP.md](../../docs/CLONE_SETUP.md). For maintainer publishing checks see [docs/PUBLIC_REPO.md](../../docs/PUBLIC_REPO.md).
 
 ## Related docs
 

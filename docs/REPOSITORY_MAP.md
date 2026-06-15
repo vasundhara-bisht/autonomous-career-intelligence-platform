@@ -329,8 +329,6 @@ Alembic migrations: `001_mvp_schema` → `002_read_views` → `003_query_metadat
 | [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md) | Operator | launchd install, schedule, logs |
 | [SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md](./SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md) | Architect, dev | Data model depth, memory philosophy |
 | [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md) | Migration history | D0–D8B timeline, rollback reference |
-| [D8B_PROMOTION_SIGNOFF.md](./D8B_PROMOTION_SIGNOFF.md) | Evidence | D8B promotion evidence archive (live procedures: PRODUCTION_OPERATIONS) |
-| [PUBLIC_MIRROR_PROMOTION.md](./PUBLIC_MIRROR_PROMOTION.md) | Maintainer | Public repo promotion workflow |
 | [PUBLIC_REPO.md](./PUBLIC_REPO.md) | Maintainer | Sanitized mirror checklist |
 | [config/profiles/README.md](../config/profiles/README.md) | Operator | AI candidate profile editing |
 

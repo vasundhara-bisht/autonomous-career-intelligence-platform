@@ -34,13 +34,18 @@ The scheduler does not alter scoring, acquisition, or persistence logic inside `
 | [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md) §3 | Daily workflow, manual fallback, weekly backup |
 | [PROJECT_COMMAND_REFERENCE.md](./PROJECT_COMMAND_REFERENCE.md) §10.1, §12 | Script commands and cheat sheet |
 | [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md) §6–§7 | Operating model and limitations |
-| [PUBLIC_MIRROR_PROMOTION.md](./PUBLIC_MIRROR_PROMOTION.md) | Promoting `scripts/scheduling/` to the public portfolio clone |
 
 ---
 
-## Public mirror note
+## Operator-local artifacts
 
-`scripts/scheduling/` (shell scripts and plist templates) may be copied to the **public** portfolio repo on promotion. **Operator-local only:** `.env`, `logs/scheduled/`, and installed plists under `~/Library/LaunchAgents/`. Sanitize `docs/SCHEDULER_SETUP.md` on promote (example profile paths) per [PUBLIC_MIRROR_PROMOTION.md](./PUBLIC_MIRROR_PROMOTION.md).
+Scheduling scripts ship in this repository. The following stay on your machine and are not committed:
+
+- `.env` (secrets)
+- `logs/scheduled/` (run output)
+- Installed plists under `~/Library/LaunchAgents/`
+
+Default profile path: `config/profiles/ai_candidate_profile.example.md` (override with `AI_CANDIDATE_PROFILE_PATH`). See [config/profiles/README.md](../config/profiles/README.md).
 
 ---
 

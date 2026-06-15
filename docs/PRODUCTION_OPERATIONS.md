@@ -259,7 +259,7 @@ Optional automation: `scripts/scheduling/run_scheduled_backup.sh` via LaunchAgen
 | **L2** | Git revert D8B default-flag commit |
 | **L3** | Archive → bootstrap reset → import from archive |
 
-Rollback levels aligned with [D8B_PROMOTION_SIGNOFF.md](./D8B_PROMOTION_SIGNOFF.md) evidence archive; live procedure: this section + §2.
+Rollback levels documented in [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md) (D8B); live procedure: this section + §2.
 
 ---
 
@@ -286,4 +286,4 @@ Read-only references for promotion validation:
 | D8B post-flip run | `logs/d8b-post-flip-run-20260603-134740.log` |
 | D8B SOT validator | `logs/d8b-post-flip-sot-20260603-134753.log` |
 | Flag remediation | `logs/d8b-remediation-post-flip-run-20260603-142154.log` |
-| D8B sign-off | [D8B_PROMOTION_SIGNOFF.md](./D8B_PROMOTION_SIGNOFF.md) |
+| D8B migration | Complete — see [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md) |

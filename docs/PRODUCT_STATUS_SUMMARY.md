@@ -95,7 +95,7 @@ Phase evidence: PRODUCT_STATUS §8–§9.
 | **D6** | Dashboard + CRM writes to SQLite (`user_job_state`, recruiters) | Complete |
 | **D7** | Reset profiles truncate SQLite; `export_csv_memory.py`; SOT validator mode | Complete |
 | **D8A** | Promotion evidence (recovery drill, cap run, rollback) | Complete — [readiness report](../logs/d8a-promotion-readiness-20260603.md) |
-| **D8B** | Default-on SQLite flags; formal SOT promotion | Complete — [sign-off](./D8B_PROMOTION_SIGNOFF.md) |
+| **D8B** | Default-on SQLite flags; formal SOT promotion | Complete — see [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md) (D8B) |
 | **Post-D8B** | `sqlite_flag()` unified gates; profile v2 file | Complete — [remediation report](../logs/d8b-remediation-report-20260603.md) |
 
 Alembic head: `004_active_recruiters_view`.
