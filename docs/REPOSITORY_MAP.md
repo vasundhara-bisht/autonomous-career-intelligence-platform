@@ -103,20 +103,21 @@ Install and configuration detail (plist labels, logs, uninstall): [SCHEDULER_SET
 
 | Asset | Status | Used by | Source |
 |-------|--------|---------|--------|
-| `architecture-diagram.png` | **Current** | README §System Architecture | Eraser (manual export; source of truth) |
-| `pipeline_flow.png` | **Current** | README §End-to-End Pipeline Flow | `_generate_pipeline_flow_excalidraw.py` |
+| `architecture-diagram.png` | **Current** | README Product Walkthrough §System architecture | Eraser (manual export; source of truth) |
+| `pipeline_flow.png` | **Current** | README Product Walkthrough §End-to-end pipeline | `_generate_pipeline_flow_excalidraw.py` |
 | `pipeline_flow.excalidraw` | Source | Regenerate `pipeline_flow.png` | `_generate_pipeline_flow_excalidraw.py` |
-| `dashboard-hero.png` | **Current** (2026-06) | README Dashboard — Job Search Progression, KPI row, Last acquisition refresh | Manual Streamlit capture |
-| `dashboard-operator-controls.png` | **Current** (2026-07) | PCR §8, PRODUCTION_OPERATIONS §2.8 | Manual Streamlit capture |
-| `dashboard-acquisition-health.png` | **Pending refresh** | PCR §8 | Recapture: Acquisition Health KPIs + history (placeholder uses hero) |
-| `dashboard-monitor-health.png` | **Current** (2026-07) | PCR §8 | Manual Streamlit capture |
-| `dashboard-ai-refresh-health.png` | **Current** (2026-07) | PCR §8, PRODUCTION_OPERATIONS §2.8 | Manual Streamlit capture |
-| `dashboard-ai-refresh-popup.png` | **Pending refresh** | PCR §8, PRODUCTION_OPERATIONS §5.1 | Recapture: Run Refresh AI Evaluations dialog |
-| `dashboard-recommended-actions.png` | **Current** (2026-07) | README §Recommended Actions, PCR §8 | Manual Streamlit capture |
-| `dashboard-job-listings-listing-status.png` | **Current** (2026-07) | README, PCR §8, PRODUCTION_OPERATIONS §2.8 | Listing/Age columns; `listing_status` visibility |
-| `dashboard-crm.png` | **Pending refresh** | README CRM section | Manual capture: stage column only; no outreach columns |
-| `dashboard-source-filter.png` | **Current** (2026-06) | PCR §8 / README § Dashboard | Manual capture: sidebar Source multiselect with human-readable labels |
-| `dashboard-source-distribution.png` | **Current** (2026-06) | README § Dashboard / PCR §8 | Manual capture: Source Distribution chart with normalized labels |
+| `dashboard-hero.png` | **Current** (2026-06) | README Product Walkthrough §Dashboard overview | Manual Streamlit capture |
+| `dashboard-operator-controls.png` | **Current** (2026-07) | README Product Walkthrough §Operator Controls; PCR §8; PRODUCTION_OPERATIONS §2.8 | Manual Streamlit capture |
+| `dashboard-acquisition-health.png` | **Current** (2026-07) | README Product Walkthrough §Acquisition Health; PCR §8 | Manual Streamlit capture |
+| `dashboard-monitor-health.png` | **Current** (2026-07) | README Product Walkthrough §Lifecycle Monitor Health; PCR §8 | Manual Streamlit capture |
+| `dashboard-ai-refresh-health.png` | **Current** (2026-07) | README Product Walkthrough §AI Refresh Health; PCR §8; PRODUCTION_OPERATIONS §2.8 | Manual Streamlit capture |
+| `dashboard-ai-refresh-popup.png` | **Current** (2026-07) | README Product Walkthrough §AI Refresh preview dialog; PCR §8; PRODUCTION_OPERATIONS §5.1 | Manual Streamlit capture |
+| `dashboard-recommended-actions.png` | **Current** (2026-07) | README Product Walkthrough §Recommended Actions; PCR §8 | Manual Streamlit capture |
+| `dashboard-job-listings-listing-status.png` | **Current** (2026-07) | README Product Walkthrough §Job Listings; PCR §8; PRODUCTION_OPERATIONS §2.8 | Listing/Age columns; `listing_status` visibility |
+| `dashboard-crm.png` | **Pending refresh** | README Product Walkthrough §Recruiter CRM | Manual capture: stage column only; no outreach columns |
+| `dashboard-outreach.png` | **Pending** | README Product Walkthrough §Outreach Intelligence (prose-only until capture) | Manual Streamlit capture |
+| `dashboard-source-filter.png` | **Current** (2026-06) | PCR §8 | Manual capture: sidebar Source multiselect with human-readable labels |
+| `dashboard-source-distribution.png` | **Current** (2026-06) | PCR §8 (hero embeds distribution in README walkthrough) | Manual capture: Source Distribution chart with normalized labels |
 | `dashboard-job-listings-header.png` | **Superseded** | Legacy HM header capture | Use `dashboard-job-listings-listing-status.png` |
 | `dashboard-applied-quick-action.png` | **Pending** | OPS §2.8 / PCR §8 | Manual capture: Open Job, Applied ✓, Why? on one action row |
 | `dashboard-analytics.png` | **Deprecated** | Retired — Job Search Progression in hero; do not embed stale analytics-only UI | Superseded by hero |

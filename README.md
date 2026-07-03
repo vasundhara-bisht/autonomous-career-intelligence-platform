@@ -2,31 +2,20 @@
 
 An AI-powered job intelligence system that aggregates opportunities across multiple hiring channels, normalizes and deduplicates them, scores fit against a candidate profile, and surfaces actionable recommendations through operational dashboards and recruiter-aware memory.
 
-Built for product-minded operators who want **signal over noise** - with transparent pipeline stages, explainable scoring, and production-grade observability.
+Built for product-minded operators who want **signal over noise** — with transparent pipeline stages, explainable scoring, and production-grade observability.
 
----
+![Python](https://img.shields.io/badge/Python-3.12%2B-blue)
+![Streamlit](https://img.shields.io/badge/Dashboard-Streamlit-FF4B4B)
+![SQLite](https://img.shields.io/badge/Memory-SQLite-003B57)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-## Documentation
-
-Primary documentation index — start here.
-
-| Doc | Purpose |
-|-----|---------|
-| [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md) | **Status snapshot** — capability maturity, limitations, milestones summary; architecture diagrams in this README; live procedures in PRODUCTION_OPERATIONS |
-| [docs/REPOSITORY_MAP.md](docs/REPOSITORY_MAP.md) | **Codebase navigation** — structure, data flow, subsystem map, entry points |
-| [docs/SCHEDULER_SETUP.md](docs/SCHEDULER_SETUP.md) | **Canonical scheduling** — macOS launchd install, acquisition **09:00 / 21:00 IST**, lifecycle monitor **17:00 IST once daily**, logs, uninstall |
-| [docs/PRODUCTION_OPERATIONS.md](docs/PRODUCTION_OPERATIONS.md) | **Canonical operator procedures** — daily workflow + pre-production reset |
-| [docs/PROJECT_COMMAND_REFERENCE.md](docs/PROJECT_COMMAND_REFERENCE.md) §10b | Commands, flags, troubleshooting |
-| [docs/SQLITE_IMPLEMENTATION_PLAN.md](docs/SQLITE_IMPLEMENTATION_PLAN.md) | D0–D8B migration history and rollback reference |
-| [docs/SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md](docs/SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md) | SQLite data model and product memory design |
-| [docs/PUBLIC_REPO.md](docs/PUBLIC_REPO.md) | Portfolio-safe publishing checklist |
-| [config/profiles/README.md](config/profiles/README.md) | AI candidate profile editing |
+**[Product Walkthrough](#product-walkthrough)** · **[Quick Start](#quick-start)** · **[Documentation](#documentation)** · **[Clone setup](docs/CLONE_SETUP.md)**
 
 ---
 
 ## Why I Built This
 
-Job searching today is not really a search problem - it is an **operations problem**.
+Job searching today is not really a search problem — it is an **operations problem**.
 
 The same role shows up on LinkedIn, on an ATS board, and on a niche marketplace. Titles look similar but responsibilities differ. A listing from last week may still be open, or it may already be stale. And every time you open a new tab, you lose context: who posted the role, whether you already saw it, and whether it is actually a fit for your level and domain.
 
@@ -34,58 +23,70 @@ I started with scraper scripts because I needed more reach than manual browsing.
 
 So I rebuilt the approach as a **career intelligence platform**:
 
-- **Orchestration** - Multiple sources run in a governed pipeline, not as one-off scripts.
-- **Memory** - Historical state, stored descriptions, and recruiter metadata persist across runs so the system learns what it has already processed.
-- **Layered filtering** - Fast relevance checks first, then deeper AI scoring only where it adds value.
-- **Explainability** - Scores come with reasons tied to domain, responsibilities, and seniority - not just keyword matches.
+- **Orchestration** — Multiple sources run in a governed pipeline, not as one-off scripts.
+- **Memory** — Historical state, stored descriptions, and recruiter metadata persist across runs so the system learns what it has already processed.
+- **Layered filtering** — Fast relevance checks first, then deeper AI scoring only where it adds value.
+- **Explainability** — Scores come with reasons tied to domain, responsibilities, and seniority — not just keyword matches.
 
-The goal is not to automate "apply to everything." It is to create a **repeatable intelligence layer** that turns fragmented listings into a short, explainable list of opportunities worth human attention. That is the product mindset behind this repository: less tab chaos, more signal.
+The goal is not to automate "apply to everything." It is to create a **repeatable intelligence layer** that turns fragmented listings into a short, explainable list of opportunities worth human attention. Listing freshness and availability are tracked over time so the dashboard reflects what is still open — not just what was scraped last week.
 
 ---
 
-## Problem → Solution → Outcome
+## Problem
 
-### The problem
+Modern job search is not limited to one website. The same company may post on LinkedIn, an ATS board, and a niche marketplace. Titles compress real scope into a few words. Freshness, level, and domain fit are hard to judge from a card view alone. For a focused search, volume is manageable in theory; in practice it becomes an operations problem: too many tabs, too little memory, and too much repeated mental work.
 
-Modern job search is not limited to one website. The same company may post on LinkedIn, an ATS board, and a niche marketplace. Titles compress real scope into a few words. Freshness, level, and domain fit are hard to judge from a card view alone. For a focused search (for example, product management in specific geographies), the volume is manageable in theory. In practice, it becomes an operations problem: too many tabs, too little memory, and too much repeated mental work.
+Common approaches break down in predictable ways:
 
-### Why common approaches break down
+- **Manual tracking** (spreadsheets, Notion, starred tabs) works until source count grows — you re-enter jobs, reconcile duplicates by hand, and lose recruiter context between sessions.
+- **Single-source alerts** reduce noise in one channel but miss the rest of the market and rarely store full descriptions or scoring logic across runs.
+- **One-off scrapers** increase reach but do not create a governed workflow: no stable identity across URLs, no incremental routing, no explainable ranking.
+- **Title-only filters** are fast but brittle — adjacent roles often look identical in the title while differing sharply in responsibilities and seniority.
 
-**Manual tracking** (spreadsheets, Notion, starred tabs) works until volume and source count grow. You spend time re-entering jobs you already saw, reconciling duplicates by hand, and losing recruiter context between sessions.
+---
 
-**Single-source alerts** reduce noise in one channel but miss the rest of the market. They also rarely store full descriptions or scoring logic across runs.
-
-**One-off scrapers** increase reach but do not create a **governed workflow**: no stable identity for the same role across URLs, no incremental routing for jobs already processed, and no explainable ranking for why a role surfaced today.
-
-**Title-only filters** are fast but brittle. PM and adjacent roles often look identical in the title while differing sharply in responsibilities, seniority, and domain.
-
-### Product and system design
+## Solution
 
 This repository implements a **governed career intelligence pipeline**, not a dump of scraped rows.
 
-**Fragmented ecosystem → unified ingestion.** Multiple hiring channels feed one normalization and identity layer, with per-source run caps so acquisition stays deliberate rather than unbounded.
+- **Fragmented ecosystem → unified ingestion.** Multiple hiring channels feed one normalization and identity layer, with per-source run caps so acquisition stays deliberate.
+- **Noise and duplicates → layered filtering.** Stage-1 relevance removes obvious mismatches cheaply; deduplication runs before expensive description fetch and AI calls.
+- **No run-to-run memory → incremental routing.** Historical state splits each job into brand new, needs-AI-only, or fully processed paths.
+- **Shallow matching → AI scoring on full text.** Batched evaluation against a defined candidate profile produces a score and a short reason — not a keyword hit.
+- **Listings without relationships → recruiter-aware memory.** Hiring contact metadata syncs into a CRM-style store so opportunities are part of an ongoing market map.
+- **Stale listings without visibility → lifecycle monitoring.** A scheduled monitor updates listing availability so recommendations and tables reflect what is still open.
+- **Opaque batch jobs → operational visibility.** Run summaries, health KPIs, and scheduler controls are built for someone monitoring a live pipeline.
 
-**Noise and duplicates → layered filtering.** Stage-1 relevance removes obvious mismatches cheaply. Deduplication (V2 identity, exact URL, fuzzy title/company) runs before expensive description fetch and AI calls, so cost tracks signal.
+Under the hood: SQLite product memory, a Streamlit operator dashboard, and macOS launchd scheduling for unattended runs. See the [Product Walkthrough](#product-walkthrough) for the surface experience and [System architecture](#system-architecture) for the platform map.
 
-**No run-to-run memory → incremental routing.** Historical state splits each job into brand new, needs AI only, or fully processed paths. Repeat runs do not re-filter and re-fetch everything from scratch.
+---
 
-**Shallow matching → AI scoring on full text.** Batched evaluation against a defined candidate profile produces a score and a short reason (domain, responsibilities, seniority), not a keyword hit.
-
-**Listings without relationships → recruiter-aware memory.** Hiring contact metadata syncs into a CRM-style store so the system treats opportunities as part of an ongoing market map, not isolated URLs.
-
-**Opaque batch jobs → operational visibility.** Run summaries, identity health, and batch progress are written for someone monitoring a live pipeline, not parsing ad hoc debug output.
-
-### Outcomes and impact
+## Outcome
 
 For a recruiter or hiring manager reviewing this work, the useful signal is not scrape volume. It is whether the system produces a **smaller, explainable shortlist** with enough context to judge fit quickly: who is behind the role, why it ranked, and what changed since the last run.
 
-- **Reduced repeated processing:** Historical routing sends fully processed jobs straight to merge, and "needs AI only" jobs skip Stage 1, dedup, and description fetch. Repeat runs spend effort on net-new work instead of replaying the full pipeline.
-- **Lower unnecessary AI workload:** Stage-1 filtering and deduplication run before batch scoring. Description text is reused from the store when already captured, so model calls concentrate on jobs that cleared cheaper gates.
-- **Faster identification of relevant PM roles:** Title and location rules remove obvious mismatches early. Semantic scoring then reads full descriptions, which matters when titles like "Product Manager" hide different levels and domains.
-- **Cleaner deduplicated job intelligence:** V2 identity, exact URL matching, and fuzzy title/company checks reduce the same listing appearing under multiple links in the latest acquisition cohort.
-- **Persistent recruiter context across runs:** Hiring manager and recruiter metadata (especially from Instahyre and LinkedIn) persist in SQLite recruiter memory (with optional CSV export), so sourcing sessions build on prior contact context instead of resetting each time.
-- **Improved explainability of recommendations:** Each scored role carries a short `reason` tied to profile constraints, not only a numeric `ai_score`, making it easier to defend why a role is worth review or should be skipped.
-- **Inspectable operations:** Stage summaries, identity health, and per-batch AI progress give concrete counts per run (accepted vs rejected, deduped, queued for scoring), which supports tuning sources and filters with evidence rather than intuition.
+- **Less repeated work** — Incremental routing spends effort on net-new jobs instead of replaying the full pipeline every run.
+- **Lower AI cost** — Cheaper gates run before batch scoring; stored descriptions are reused when already captured.
+- **Faster PM relevance** — Semantic scoring reads full descriptions when titles alone are misleading.
+- **Cleaner intelligence** — Layered deduplication reduces the same listing appearing under multiple URLs.
+- **Persistent relationships** — Recruiter and hiring-manager context survives across acquisition runs.
+- **Inspectable operations** — Health sections and scheduler controls make production behavior visible, not buried in logs.
+- **Listing truth over time** — Lifecycle monitoring keeps `listing_status` current so queues and tables do not surface closed roles as actionable.
+
+### Sample ranked recommendations
+
+Recommendations are produced after layered filtering and AI scoring against a defined candidate profile. Examples below are anonymized outputs representative of historical pipeline runs.
+
+<span style="color:#0969da">**Company names and identifiers have been anonymized for portfolio presentation.**</span>
+
+| Company | Role | AI Score | AI Recommendation |
+|---------|------|----------|-------------------|
+| B2C AI subscription (Remote) | Product Manager | 9 | **Recommend.** Strong alignment with ownership-heavy B2C product work, AI-led growth, and experimentation. |
+| Payments infrastructure (India) | Product Manager II | 7 | **Moderate fit.** Solid fintech scope and execution ownership. Review level and location before raising priority. |
+| India payments platform | Product Growth Manager | 5 | **Conditional.** Relevant growth domain, but the JD is analytics- and SQL-heavy versus strategy-led PM work. Quick scan only. |
+| Large cloud platform | Product Manager, GPU-as-a-Service | 2 | **Low relevance.** Infrastructure-focused GPU platform role with a senior technical bar. Outside target PM scope and seniority band. |
+
+Scoring rules and profile configuration: [config/profiles/README.md](config/profiles/README.md) and [PROJECT_COMMAND_REFERENCE.md §8](docs/PROJECT_COMMAND_REFERENCE.md#8-streamlit-dashboard).
 
 ---
 
@@ -99,33 +100,19 @@ You do not need to run code to understand what this project does. Think of it as
 | **Organize** | Removes duplicates and applies relevance rules | A cleaner, de-duplicated set of roles |
 | **Recommend** | AI scores fit against a defined candidate profile | Ranked opportunities with short explanations |
 
-### In plain language
+**In plain language:** jobs come in from LinkedIn, Instahyre, and optional ATS boards → the pipeline cleans and filters them → AI adds a second opinion on fit where the title alone is misleading.
 
-1. **Jobs come in** from places like LinkedIn and Instahyre (and optional company boards).
-2. **The pipeline cleans and filters** them so you are not reviewing the same posting three times under different URLs.
-3. **AI adds a second opinion** on fit - useful for PM-style roles where the title alone is misleading.
+**If you are reviewing this as a hiring manager or recruiter:**
 
-### If you are reviewing this as a recruiter or hiring manager
+- *Does this person think in systems?* — The walkthrough below shows intentional product design across acquisition, decision queues, relationships, and operations.
+- *Is the output actionable?* — Scored jobs include a **reason**, not just a number.
+- *Can they operate it in production?* — Scheduler health, pause/resume controls, and parity validation are first-class UI concerns.
 
-- Ask: *Does this person think in systems?* - The README sections on pipeline flow, memory, and recruiter CRM show intentional product design, not a single scraper.
-- Ask: *Is the output actionable?* - Scored jobs include a **reason** field, not just a number.
-- Ask: *Can they operate it?* - Run summaries are written for live monitoring (batch progress, pipeline totals), not raw debug dumps.
+**To see the product surface:** scroll to the [Product Walkthrough](#product-walkthrough), or run `./scripts/run_dashboard.sh` after a local install.
 
-### If you want to see the product surface (technical setup required)
+**For engineers:** `python main.py` then `./scripts/run_dashboard.sh` — full steps in [docs/CLONE_SETUP.md](docs/CLONE_SETUP.md).
 
-Someone with the project installed locally can:
-
-1. Run the pipeline once to refresh recommendations.
-2. Open the **Streamlit dashboard** to browse scored roles, filter the job table, review source distribution, and manage recruiter relationships — see [Dashboard](#dashboard).
-
-Detailed install steps are in [Local Setup for Developers](#local-setup-for-developers) at the end of this README - intentionally separated so this section stays approachable.
-
-### What you will not find in this Quick Start
-
-- API keys, login sessions, or live job data (private/local by design).
-- Guaranteed apply links or employer endorsements - always verify on the source site.
-
-> **For engineers:** `python main.py` then `./scripts/run_dashboard.sh` - see [Local Setup for Developers](#local-setup-for-developers).
+This repository does not ship API keys, login sessions, or live job data (private/local by design).
 
 ---
 
@@ -135,431 +122,200 @@ This platform turns fragmented job listings into a **single career intelligence 
 
 | Problem | How the platform addresses it |
 |--------|-------------------------------|
-| Jobs scattered across LinkedIn, ATS boards, and niche marketplaces | Multi-source acquisition with per-source orchestration and run caps |
+| Jobs scattered across channels | Multi-source acquisition with per-source orchestration and run caps |
 | Duplicate listings and unstable URLs | Dual identity system (legacy + V2) with layered deduplication |
 | Shallow title-only filtering | Stage-1 rules plus semantic AI scoring on full descriptions |
-| Lost context between runs | Historical memory, description store, and recruiter CRM |
-| Hard-to-debug batch pipelines | Dashboard-style operational logging at each stage |
+| Lost context between runs | SQLite product memory, incremental routing, description store |
+| Stale or closed listings | Lifecycle monitor updates `listing_status` on each job |
+| No visibility into production runs | Acquisition Health, Monitor Health, AI Refresh Health, Operational Controls |
+| Re-scoring without re-scraping | Refresh AI Evaluations (dashboard or CLI) |
+| Relationships and outreach scattered | Recruiter CRM + Outreach Intelligence below the job table |
 
-The system is designed as a **personal career copilot** that can be demonstrated to recruiters, hiring managers, and product/AI teams as a serious orchestration product - not a one-off scraper script.
+The system is designed as a **personal career copilot** that can be demonstrated to recruiters, hiring managers, and product/AI teams as a serious orchestration product — not a one-off scraper script.
 
-**Product memory:** SQLite (`data/ai_job_agent.db`) is the default source of truth under D8B; CSV files under `data/` are optional exports for backup and handoff.
-
-> **Diagram:** See [System Architecture](#system-architecture) for the end-to-end platform overview.
+Capability maturity and limitations: [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md).
 
 ---
 
 ## Key Features
 
-- **Multi-channel acquisition** - LinkedIn (query-orchestrated), Instahyre (feed-driven + Interested sync), Greenhouse, Lever, WeWorkRemotely
-- **Instahyre Interested sync** - Post-feed list-only harvest; Interested queue membership → `Applied` state; early SQLite persist (`not_required` for CRM stages) — [docs/PROJECT_COMMAND_REFERENCE.md §5](docs/PROJECT_COMMAND_REFERENCE.md#5-instahyre-specific-controls)
-- **Configurable run governance** - Per-source `*_MAX_RUNS` environment gates (disable with `0`, cap with positive integers); `INSTAHYRE_MAX_RUNS=0` disables feeds **and** Interested sync
-- **Incremental historical routing** - Brand-new vs needs-AI-only vs fully-processed vs **user-managed** (CRM stages skip AI via `not_required`)
-- **User-managed pipeline** - `New`/`Saved` discovery stages; `Applied+` CRM workflow stages bypass AI evaluation — [`src/agent/pipeline_stages.py`](src/agent/pipeline_stages.py)
-- **Stage-1 relevance filter** - Fast title/location scoring before expensive steps
-- **Global deduplication** - V2 identity, exact URL, and fuzzy title/company matching
-- **Description persistence** - Reuse stored job text; fetch only when missing
-- **AI batch scoring** - Profile-aligned semantic evaluation with structured JSON reasons
-- **Recruiter intelligence** - CRM sync from hiring manager / recruiter metadata (especially Instahyre)
-- **Tier-2 metadata (Instahyre)** - Posted date and age from Schema.org JSON-LD on detail pages
-- **Streamlit dashboard** - Job Search Progression (Discovery / Application / Outcomes), KPIs, source distribution, filterable job table, pipeline analytics expander, and recruiter CRM — see [Dashboard](#dashboard)
-- **Operational observability** - Summarized logs for Stage-1, identity health, LinkedIn/Instahyre acquisition, and AI batches
-- **Scheduled production acquisition** - Twice-daily local runs (**09:00 / 21:00 IST**) via launchd, file-locked wrappers, and post-run parity validation
-- **Scheduled lifecycle monitor (Scheduler B)** - Once-daily listing availability checks (**17:00 IST**) via launchd; `listing_status` on jobs is the sole listing-availability model; dashboard via `./scripts/run_dashboard.sh`
+### Acquisition
+
+- LinkedIn query orchestration, Instahyre feeds, Greenhouse, Lever, WeWorkRemotely
+- Instahyre Interested sync — list-only harvest that marks Applied state without re-running the full AI pipeline
+- Per-source `*_MAX_RUNS` gates to keep runs deliberate and cost-bounded
+
+### Intelligence
+
+- Stage-1 relevance filter before expensive steps
+- V2 identity, exact URL, and fuzzy title/company deduplication
+- Incremental routing: brand-new vs needs-AI-only vs fully processed vs user-managed CRM stages
+- AI batch scoring with structured `ai_score` + `reason` per job
+- Manual **Refresh AI Evaluations** to re-score existing jobs without re-scraping
+
+### Listing lifecycle
+
+- Scheduled lifecycle monitor (Scheduler B) checks listing availability
+- `listing_status` drives Recommended Actions and dashboard visibility (`open` / `closed` / `removed`)
+- LinkedIn applied detection can auto-promote discovery-stage jobs and set `monitor_exempt`
+
+### Dashboard
+
+- Job Search Progression (Discovery → Application → Outcomes) and source distribution
+- Four-queue **Recommended Actions** Command Center on scored discovery jobs
+- Sidebar-filtered **Job Listings** with Listing/Age columns and hiring-manager edit
+- **Recruiter Relationship Manager** with stage progression
+- **Outreach Intelligence** — opportunity-centric attempt log (V1–V1.3)
+
+### Operations
+
+- macOS launchd: acquisition **09:00 / 21:00 IST**, lifecycle monitor **17:00 IST** daily
+- Operational Controls: pause/resume schedulers, run-now triggers, AI refresh dialog
+- Post-run SQLite parity validation
+
+Command and flag detail: [PROJECT_COMMAND_REFERENCE.md](docs/PROJECT_COMMAND_REFERENCE.md).
 
 ---
 
-## Dashboard
+## Product Walkthrough
+
+The Streamlit dashboard is where acquisition output becomes decisions. The tour below follows how an operator — or a reviewer evaluating the product — would experience the platform: from headline health, through what to act on, through relationships and outreach, then how data flows in, and finally how production runs are controlled.
+
+### Dashboard overview
+
+Opening the dashboard, you see whether the system is current: last acquisition and monitoring refresh, total jobs in memory, recruiter count, and how discovery jobs are distributed across pipeline stages and sources. This is the orientation layer — before diving into queues, you know if today's run landed and how large the working set is.
 
 <p align="center">
-  <img src="./diagrams/dashboard-hero.png" alt="Streamlit dashboard: Last acquisition refresh, Total Jobs, Latest Acquisition, Total Recruiters, Job Search Progression, and Source Distribution" width="720" />
-</p>
-
-The **Streamlit dashboard** is the operator UI for reviewing acquisition output: header KPIs (**Total Jobs**, **Latest Acquisition**, **Total Recruiters**), **Last Monitoring Refresh**, then **Operational Controls** (pause/resume acquisition and lifecycle schedulers; **Refresh AI Evaluations** with preset picker and subprocess trigger when `SQLITE_DASHBOARD_WRITE=1`), **Acquisition Health** (Scheduler A summary KPIs + run history), **Operational Monitor Health** (Scheduler B summary KPIs + run history), **AI Refresh Health** (latest completed manual re-score run: two-row KPIs — Health/Last Preset, then Jobs Scored/Last Run Duration/Last Run Cohort/Last Run Eligible/Batch Failures — plus run history without cap-skipped columns), **Recommended Actions** (four rule-based job queues on `dashboard_df` in a 2×2 Command Center; `listing_status=open` only), **Job Search Progression** stage cards (Discovery → Application → Outcomes), source distribution (human-readable source labels), a sidebar-filtered job listings table (Listing/Age columns; `open` and `closed` visible; `removed` hidden), collapsible pipeline analytics, recruiter relationship management, and **Outreach Intelligence V1–V1.3** (opportunity-centric outreach attempt log below CRM; V1.2 LinkedIn post ingestion, V1.3 Job Outreach split). Listing visibility is **always on** via `listing_status` (TD10). Dashboard metrics use the visibility cohort (`dashboard_df`); sidebar filters affect the job table only. **Canonical launch:** `./scripts/run_dashboard.sh` (loads repo `.env`). Architecture: [docs/PROJECT_COMMAND_REFERENCE.md §8](docs/PROJECT_COMMAND_REFERENCE.md#8-streamlit-dashboard), [docs/REPOSITORY_MAP.md §5](docs/REPOSITORY_MAP.md#5-data-flow).
-
-<p align="center">
-  <img src="./diagrams/dashboard-job-listings-listing-status.png" alt="Job Listings with Listing and Age columns under listing_status visibility" width="720" />
+  <img src="./diagrams/dashboard-hero.png" alt="Streamlit dashboard header: KPIs, Job Search Progression stage cards, and Source Distribution" width="720" />
 </p>
 
 ### Recommended Actions Command Center
 
-Phase 3A.2 surfaces high-fit discovery jobs in four scrollable queue panels (waterfall assignment — each job in at most one queue): **High Confidence** (score ≥ 9, days 0–13), **Apply Today** (score 8, days 0–3), **Apply This Week** (score 8, days 4–13), and **Needs Review** (14+ days). Panels use a **2×2 grid** with per-queue display caps (8 / 10 / 12 / 10) and **Load More** (+25). Panel height is dynamic (max 360px) based on visible card count. Each card shows title, company, and AI score; **Open Job ↗** opens the posting URL; **Applied ✓** (Phase 3A.1) on High Confidence, Apply Today, and Apply This Week marks the job Applied; **Why?** opens a popover with the full AI rationale. Needs Review uses a help icon for queue guidance. Queues use `dashboard_df` only — sidebar filters do not change queue membership.
+Once jobs are scored, the question is not "what exists?" but "what deserves attention today?" Four waterfall queues — **High Confidence**, **Apply Today**, **Apply This Week**, and **Needs Review** — surface discovery-stage jobs by score and age. Each card links to the posting, shows the AI score, and offers **Applied ✓** on the apply-oriented queues so progress is recorded without leaving the dashboard. **Why?** opens the full rationale behind the score.
 
 <p align="center">
-  <img src="./diagrams/dashboard-recommended-actions.png" alt="Recommended Actions Command Center: four-queue 2×2 grid with High Confidence, Apply Today, Apply This Week, and Needs Review panels; Applied ✓ on apply queues; help icon on Needs Review" width="720" />
+  <img src="./diagrams/dashboard-recommended-actions.png" alt="Recommended Actions Command Center: four-queue 2×2 grid with High Confidence, Apply Today, Apply This Week, and Needs Review" width="720" />
+</p>
+
+Only `listing_status=open` jobs appear in these queues — closed listings drop out automatically after the lifecycle monitor runs.
+
+### Job Listings
+
+When you need the full table — not just the shortlist — Job Listings provides a sidebar-filtered view of the visibility cohort. **Listing** and **Age** columns show availability and freshness; open and closed jobs remain visible for context while removed listings stay hidden. Hiring Manager can be edited inline, which flows into recruiter CRM when dashboard writes are enabled.
+
+<p align="center">
+  <img src="./diagrams/dashboard-job-listings-listing-status.png" alt="Job Listings table with Listing and Age columns under listing_status visibility" width="720" />
+</p>
+
+### Recruiter CRM
+
+Jobs are not isolated URLs — they connect to people. The Recruiter Relationship Manager tracks hiring contacts discovered during acquisition: stage progression from discovered through warm, active, and responded, plus an editable CRM table. Metrics reflect relationship workflow stages, not just whether a name appeared once in a scrape.
+
+<p align="center">
+  <img src="./diagrams/dashboard-crm.png" alt="Recruiter Relationship Manager: stage progression cards and CRM table" width="720" />
+</p>
+
+### Outreach Intelligence
+
+Below CRM, **Outreach Intelligence** logs outreach *attempts* tied to opportunities — separate from recruiter stage management. KPIs cover active outreach, follow-ups due, and overdue items. New records can be prefilled from job listings or LinkedIn posts (V1.2–V1.3), so the log captures what was said, when, and in what context without replacing the CRM.
+
+*Screenshot: capture pending — see [PROJECT_COMMAND_REFERENCE.md §8](docs/PROJECT_COMMAND_REFERENCE.md#outreach-intelligence-v1) for layout detail.*
+
+### End-to-end pipeline
+
+Everything above is fed by a governed batch pipeline. New jobs pass Stage-1 filtering and deduplication before descriptions are fetched and AI scoring runs; repeat jobs route through incremental paths so prior work is not replayed. Instahyre adds a two-phase path: feed acquisition, then Interested sync for Applied-state updates.
+
+<p align="center">
+  <img src="./diagrams/pipeline_flow.png" alt="End-to-end pipeline flow from multi-source acquisition through filtering and AI scoring to the dashboard" width="520" />
+</p>
+
+Typical routing: **brand new** → Stage 1 → dedup → descriptions → AI · **needs AI only** → AI queue directly · **fully processed** → merge from memory · **user-managed CRM stages** → skip AI (`not_required`).
+
+### System architecture
+
+At platform scale, ingestion, SQLite product memory, filtering, AI scoring, lifecycle monitoring, and the Streamlit layer form one path from fragmented listings to actionable recommendations. Multi-source acquisition runs under per-source caps; macOS launchd triggers scheduled acquisition and monitor runs in production.
+
+![System architecture](./diagrams/architecture-diagram.png)
+
+Diagram inventory: [docs/REPOSITORY_MAP.md §2.1](docs/REPOSITORY_MAP.md#21-diagram-assets). Data model depth: [docs/SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md](docs/SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md).
+
+### Operator Controls
+
+Production operation needs more than a cron line in a README. **Operational Controls** exposes acquisition and lifecycle schedulers in the dashboard: pause, resume, and run-now when writes are enabled. **Refresh AI Evaluations** triggers a manual re-score run with a preset picker — useful when the candidate profile changes but you do not want to re-scrape every listing.
+
+<p align="center">
+  <img src="./diagrams/dashboard-operator-controls.png" alt="Operational Controls: Acquisition, Lifecycle Monitor, and Refresh AI Evaluations cards" width="720" />
+</p>
+
+Technical detail: [PROJECT_COMMAND_REFERENCE.md §8 — Operational Controls](docs/PROJECT_COMMAND_REFERENCE.md#operational-controls).
+
+### Acquisition Health
+
+Each acquisition run writes structured outcomes to SQLite. **Acquisition Health** summarizes the latest Scheduler A run — observations ingested, query runs, duration — and surfaces run history so you can confirm twice-daily runs succeeded without opening log files.
+
+<p align="center">
+  <img src="./diagrams/dashboard-acquisition-health.png" alt="Acquisition Health: summary KPIs and acquisition run history table" width="720" />
+</p>
+
+### Lifecycle Monitor Health
+
+Listing availability changes after the initial scrape. **Operational Monitor Health** (Scheduler B) reports the latest lifecycle monitor run: jobs checked, status transitions, and duration. This is what keeps Recommended Actions honest about which roles are still open.
+
+<p align="center">
+  <img src="./diagrams/dashboard-monitor-health.png" alt="Operational Monitor Health: summary KPIs and lifecycle monitor run history" width="720" />
+</p>
+
+### AI Refresh Health
+
+When you re-score without re-scraping, **AI Refresh Health** shows the latest completed manual refresh: preset used, jobs scored, cohort size, eligible count, duration, and batch failures. Run history makes it easy to compare one refresh against the next after a profile update.
+
+<p align="center">
+  <img src="./diagrams/dashboard-ai-refresh-health.png" alt="AI Refresh Health: two-row KPIs and AI refresh run history" width="720" />
+</p>
+
+### AI Refresh preview dialog
+
+Before committing API spend, the refresh dialog shows an operator-friendly preview: current cohort size, jobs ready for scoring, and an estimated request count — without internal batch terminology. The preview updates when you change preset (`backlog` vs `discovery`).
+
+<p align="center">
+  <img src="./diagrams/dashboard-ai-refresh-popup.png" alt="Run Refresh AI Evaluations dialog with preset picker and operator-friendly preview card" width="720" />
 </p>
 
 ---
 
-## End-to-End Pipeline Flow
+## Documentation
 
-This diagram shows the governed workflow from multi-source job ingestion through filtering, enrichment, and AI scoring to ranked recommendations and the dashboard layer.
+Implementation depth lives here — the README is the product tour.
 
-<p align="center">
-  <img src="./diagrams/pipeline_flow.png" alt="End-to-End Pipeline Flow: acquisition through dashboard" width="520" />
-</p>
-
-**Typical routing:**
-
-- **Brand new** → Stage 1 → dedup → descriptions → AI queue  
-- **Needs AI only** → joins AI queue directly (skips repeat Stage 1 / dedup / fetch)  
-- **User-managed historical** → fully processed + `not_required` (CRM stages; skip AI)  
-- **Fully processed** → merged from historical memory without re-scoring  
-
-**Instahyre two-phase:** feed acquisition (detail pages) → Interested sync (list-only, Applied state, early DB write, not in main AI pipeline).
-
----
-
-## System Architecture
-
-![System Architecture](./diagrams/architecture-diagram.png)
-
-Diagram inventory (current vs deprecated assets): [docs/REPOSITORY_MAP.md §2.1](docs/REPOSITORY_MAP.md#21-diagram-assets).
-
-The platform follows a single governed path from fragmented listings to actionable recommendations. **Multi-source ingestion** pulls roles from LinkedIn, Instahyre, Greenhouse, Lever, and WeWorkRemotely under per-source run controls. In production, **macOS launchd** triggers the pipeline on a fixed schedule ([docs/SCHEDULER_SETUP.md](docs/SCHEDULER_SETUP.md)) through file-locked wrappers and post-run parity validation. **SQLite product memory** (`data/ai_job_agent.db`) is the default store for jobs, evaluations, descriptions, and recruiter metadata. **Layered filtering** normalizes and routes each job through historical memory, fast Stage-1 relevance checks, and deduplication before expensive description fetch and AI work. **AI scoring** evaluates full job text in batches against a candidate profile, returning a fit score and a short, explainable reason. **Recruiter-aware memory** persists contact metadata so repeat runs stay incremental rather than starting from zero. **Operational dashboards** surface ranked outputs in Streamlit and summarized pipeline logs for live run monitoring.
+| Doc | Purpose |
+|-----|---------|
+| [docs/CLONE_SETUP.md](docs/CLONE_SETUP.md) | **First-time install** — clone, venv, `db_init`, first run |
+| [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md) | **Status snapshot** — capability maturity, limitations, milestones |
+| [docs/REPOSITORY_MAP.md](docs/REPOSITORY_MAP.md) | **Codebase navigation** — structure, data flow, subsystem map |
+| [docs/SCHEDULER_SETUP.md](docs/SCHEDULER_SETUP.md) | **Scheduling** — macOS launchd install, 09:00 / 21:00 acquisition, 17:00 monitor |
+| [docs/PRODUCTION_OPERATIONS.md](docs/PRODUCTION_OPERATIONS.md) | **Operator procedures** — daily workflow and reset checklist |
+| [docs/PROJECT_COMMAND_REFERENCE.md](docs/PROJECT_COMMAND_REFERENCE.md) | **Commands and dashboard** — §8 layout, §10b flags and troubleshooting |
+| [docs/SQLITE_IMPLEMENTATION_PLAN.md](docs/SQLITE_IMPLEMENTATION_PLAN.md) | Migration history and rollback reference |
+| [docs/SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md](docs/SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md) | SQLite data model and product memory design |
+| [docs/PUBLIC_REPO.md](docs/PUBLIC_REPO.md) | Maintainer note for this portfolio mirror |
+| [config/profiles/README.md](config/profiles/README.md) | Example AI candidate profile |
 
 ---
 
-## AI Scoring Pipeline
+## Disclaimer — Showcase vs Private Operation
 
-AI evaluation runs in **batches** (default batch size: 15) against the external candidate profile [`config/profiles/ai_candidate_profile.example.md`](config/profiles/ai_candidate_profile.example.md) (override: `AI_CANDIDATE_PROFILE_PATH`). Scoring rules and JSON format live in [`src/agent/ai_batch_scorer.py`](src/agent/ai_batch_scorer.py); see [config/profiles/README.md](config/profiles/README.md).
+This repository is intended as a **professional showcase** of product thinking, pipeline design, and operational maturity:
 
-**What the model evaluates:**
+- **Credentials and live data are not included** — auth JSON, database contents, and logs stay local under `data/` (gitignored).
+- **Candidate profile:** [`config/profiles/ai_candidate_profile.example.md`](config/profiles/ai_candidate_profile.example.md) (override with `AI_CANDIDATE_PROFILE_PATH` for a private profile).
+- **Run caps** may be tuned for validation; adjust `*_MAX_RUNS` for production economics.
+- **Scraping** depends on third-party site behavior; respect terms of service and rate limits.
+- **AI scores are advisory** — not hiring decisions; always verify listings on source sites.
 
-- Domain fit (B2B SaaS, fintech, AI, etc.)
-- Responsibility signals from description text (not title alone)
-- Seniority alignment vs profile constraints
-- Explicit rejection of staff/principal/director-style roles when configured
-
-**Outputs per job:**
-
-| Field | Meaning |
-|-------|---------|
-| `ai_score` | 0-10 fit score |
-| `reason` | Short explanation referencing domain, responsibilities, seniority |
-
-**Operational logging:**
-
-- One session start banner with candidate count and batch plan  
-- Per-batch completion lines (jobs scored, elapsed time)  
-- One session completion summary  
-
-Enable verbose OpenAI diagnostics with `DEBUG_AI=true`.
-
----
-
-## Sample Ranked Recommendations
-
-Recommendations are produced after layered relevance filtering and AI scoring against a defined candidate profile (domain, seniority, and responsibility fit). The examples below are anonymized outputs representative of historical pipeline runs.
-
-<strong><span style="color:#0969da">Company names and identifiers have been anonymized for portfolio presentation.</span></strong>
-
-| Company | Role | AI Score | AI Recommendation |
-|---------|------|----------|-------------------|
-| B2C AI subscription (Remote) | Product Manager | 9 | **Recommend.** Strong alignment with ownership-heavy B2C product work, AI-led growth, and experimentation. |
-| Payments infrastructure (India) | Product Manager II | 7 | **Moderate fit.** Solid fintech scope and execution ownership. Review level and location before raising priority. |
-| India payments platform | Product Growth Manager | 5 | **Conditional.** Relevant growth domain, but the JD is analytics- and SQL-heavy versus strategy-led PM work. Quick scan only. |
-| Large cloud platform | Product Manager, GPU-as-a-Service | 2 | **Low relevance.** Infrastructure-focused GPU platform role with a senior technical bar. Outside target PM scope and seniority band. |
-
----
-
-## Identity + Deduplication System
-
-### Identity (V2)
-
-Each job receives:
-
-- **Legacy `JOB_KEY`** - `normalized_title::normalized_company` (stable routing / historical compatibility)
-- **`JOB_KEY_V2`** - Source-aware opaque ID (LinkedIn ID, Greenhouse/Lever/Instahyre IDs, canonical URL, or hash fallback)
-- **`identity_source`** - Tier tag for observability (strong ID vs weak URL/hash)
-
-Production logs include **Job Identity Health** and **Production Identity Health** summaries (tier mix, collisions, unresolved rates). Deep funnel tables are available with `DEBUG_IDENTITY=true`.
-
-### Deduplication (ordered)
-
-1. **V2 match** - Same `JOB_KEY_V2` → duplicate  
-2. **Exact link** - Identical application URL  
-3. **Fuzzy match** - High title + company similarity with seniority guardrails  
-
-Dedup runs **after** Stage-1 and **before** description fetch to avoid redundant browser/API work.
-
----
-
-## Recruiter Intelligence Layer
-
-When sources expose hiring contact metadata (**Instahyre** detail pages, **LinkedIn** job pages), the pipeline:
-
-- Extracts recruiter name, title, company, and profile link  
-- **LinkedIn:** primary BEM selector + flagship3 poster-section fallback for `hiring_manager` and relative `time_posted` (see [PROJECT_COMMAND_REFERENCE §8](docs/PROJECT_COMMAND_REFERENCE.md) for probe/backfill tooling)  
-- Maps `hiring_manager` for downstream ranking and CRM  
-- Persists recruiter records in **SQLite** (`recruiters` table) with mutation-aware updates; optional **`recruiter_crm.csv`** export when enabled  
-- **Forward HM protection:** re-scrapes that return sentinel HM (`Not Specified` / blank) do not overwrite a real stored name (dual-write merge)
-
-This supports a **relationship-centric** view of the job market - not just listings, but who is behind them.
-
-The dashboard **Recruiter Relationship Manager** shows **Total Recruiters**, a **Recruiter Relationship Progression** workflow (stage cards by `recruiter_stage`: discovered → warm → active → responded, plus ghosted/archived outcomes), and an editable CRM table. Metrics use CRM workflow stages, not acquisition sighting flags.
-
-<p align="center">
-  <img src="./diagrams/dashboard-crm.png" alt="Recruiter Relationship Manager: relationship progression stage cards and CRM table with recruiter stage column" width="720" />
-</p>
-
-### Outreach Intelligence V1–V1.3
-
-**Outreach Intelligence** (below Recruiter Relationship Management) is an opportunity-centric outreach attempt log — not a CRM. KPIs: Total Outreach Records, Active Outreach, Follow-Ups Due Today, Overdue Follow-Ups. Supports manual + job-linked creation (optional prefill from Job Listings). **V1.1** adds required hiring signal type (9 types incl. `job_listing`) and optional signal URL on new records. **V1.2** adds LinkedIn post Fetch Details + AI prefill in Add Outreach. **V1.3** adds Job Outreach split with DB-driven prefill (`outreach_type`). Edit status, signal, and follow-up dates in the outreach table when `SQLITE_DASHBOARD_WRITE=1`; read-only KPIs, filters, and table when writes are off but `SQLITE_READ=1`. No write-back to recruiter stages or job pipeline. See [docs/PROJECT_COMMAND_REFERENCE.md §8](docs/PROJECT_COMMAND_REFERENCE.md#outreach-intelligence-v1).
-
-### Job freshness metadata (data layer)
-
-At acquisition, relative `time_posted` is normalized to ISO `posted_at_date` / `age_days` in SQLite (`posted_date_derive` + dual-write COALESCE). Optional one-time backfills: anchor derive and Playwright re-scrape ([PROJECT_COMMAND_REFERENCE §8](docs/PROJECT_COMMAND_REFERENCE.md)). **Dashboard Posted column still uses `last_seen`** — display phase is future.
-
-### Inactive job flag
-
-Listing availability in the dashboard and Recommended Actions is driven by **`listing_status`** on jobs (`open`, `closed`, `removed`, etc.), updated by the lifecycle monitor. LinkedIn user-applied detection during monitor runs can auto-promote discovery-stage jobs to **Applied** and set **`monitor_exempt`**. The legacy post-acquisition inactive sweep (`currently_active` on observations) was retired in Task 4 (TD10).
-
-### Data repair tooling (HM)
-
-One-time operator scripts for LinkedIn HM gaps: manifest backfill for sentinel HM without recruiter links (Task C), overwrite repair when a link exists (Task E). Commands and cohort guards: [PROJECT_COMMAND_REFERENCE §8](docs/PROJECT_COMMAND_REFERENCE.md) and §10b.
-
-### Manual Hiring Manager Capture (Phase 3B)
-
-Hiring Managers can be edited directly from the **Job Listings** dashboard. When SQLite dashboard writes are enabled (`SQLITE_DASHBOARD_WRITE=1`), updating the Hiring Manager automatically:
-
-- updates the job record (`jobs.hiring_manager` — current display for that row)
-- creates or updates the recruiter in **Recruiter CRM** (`recruiters` upsert by normalized name)
-- creates an **append-only** recruiter–job relationship (`recruiter_job_links`)
-- **preserves historical recruiter associations** (prior links are never removed when HM changes)
-
-Job Listings shows the current Hiring Manager only; Recruiter CRM retains all historical recruiter–job links for the role.
-
----
-
-## Operational Logging + Observability
-
-Logging is designed for **live run monitoring**, not debug dumps.
-
-| Stage | Production output | Debug flag |
-|-------|-------------------|------------|
-| Stage-1 | Aggregate summary (counts, score buckets, by source) | `DEBUG_STAGE1=true` |
-| LinkedIn | Acquisition start/complete, query metrics, HM extraction (primary + flagship3), `time_posted` | `DEBUG_LINKEDIN=true` |
-| Instahyre | Feed/session summaries, compact per-job lines | `DEBUG_INSTAHYRE=true` |
-| Identity | Job + production identity health dashboards | `DEBUG_IDENTITY=true` |
-| AI scoring | Batch progress + completion totals | `DEBUG_AI=true` |
-| Pipeline | Flow-style pipeline summary with ↓ transitions | - |
-
-Runtime artifacts (`logs/`, `__pycache__/`, query state files) are gitignored and not part of the repository.
-
----
-
-## Current Tech Stack
-
-| Category | Technology |
-|----------|------------|
-| Language | Python 3.12+ |
-| Orchestration | `main.py` batch pipeline |
-| Product memory | SQLite (`data/ai_job_agent.db`), Alembic migrations |
-| Browser automation | Playwright (LinkedIn, Instahyre) |
-| AI | OpenAI API (`gpt-4o-mini` via Responses API) |
-| Data | pandas; CSV as export/backup (not primary memory under D8B) |
-| Fuzzy matching | RapidFuzz |
-| Dashboard | Streamlit, Altair (reads SQLite views by default) |
-| Config | JSON catalogs + [`config/profiles/`](config/profiles/) candidate profile |
-
----
-
-## Example Workflow
-
-1. **Configure environment** - API keys and optional source run caps (see [Local Setup for Developers](#local-setup-for-developers)).  
-2. **Run acquisition** - `python main.py` (SQLite on by default; no `SQLITE_*` exports).  
-3. **Review terminal summary** - Pipeline summary, identity health, AI batch results.  
-4. **Validate** - `python scripts/validate_sqlite_parity.py --mode production --fail-on-error` (recommended).  
-5. **Open dashboard** - `./scripts/run_dashboard.sh` (loads `.env`). Reads `historical_jobs_view` + listing-status visibility layer; export cohort via `current_jobs_view`.  
-6. **Iterate** - Adjust query catalogs, feeds, or [profile markdown](config/profiles/ai_candidate_profile.example.md); re-run incrementally.  
-
-**Canonical daily and reset procedures:** [docs/PRODUCTION_OPERATIONS.md](docs/PRODUCTION_OPERATIONS.md). System overview: [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md).
-
-**Example: LinkedIn-only validation run**
-
-```bash
-INSTAHYRE_MAX_RUNS=0 WEWORKREMOTELY_MAX_RUNS=0 LEVER_MAX_RUNS=0 GREENHOUSE_MAX_RUNS=0 \
-LINKEDIN_MAX_RUNS=1 python main.py
-```
-
-**Example: Instahyre default (2 feeds + Interested sync)**
-
-```bash
-python main.py
-# Instahyre feeds + Interested sync run unless INSTAHYRE_MAX_RUNS=0
-```
-
----
-
-## Future Roadmap
-
-See docs/PRODUCT_STATUS_SUMMARY.md for canonical phase statuses and recommended priorities. **Lifecycle Monitor Tasks 1–4 + OHM complete.** Current product state: [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md) §1 and §8–§9.
-
----
-
-## Repository Structure
-
-```
-ai-job-agent/
-├── main.py                 # Pipeline entrypoint shim (runs src/agent/main.py)
-├── requirements.txt
-├── pyproject.toml          # Package metadata (requires-python >=3.12)
-├── src/
-│   ├── agent/              # Pipeline core (normalize, dedup, AI, persistence, pipeline_stages)
-│   ├── db/                 # SQLite product memory (models, dual-write, read views, recruiter_enrichment)
-│   └── paths.py            # Central path resolution (data/, config/, logs/)
-├── dashboard/
-│   ├── app.py              # Streamlit dashboard
-│   ├── loaders.py          # SQLite/CSV data loaders
-│   ├── data_flow.py        # dashboard_df vs filtered_df cohorts
-│   ├── recommended_actions.py       # Phase 3A job action queues
-│   ├── recommended_actions_ui.py    # Recommended Actions dashboard UI
-│   ├── recommended_actions_config.py
-│   ├── display_text.py     # Why? popover and rationale formatting
-│   ├── source_display.py   # Human-readable source labels (sidebar, chart, table, CRM)
-│   ├── ui_help.py          # Info-icon tooltips (Needs Review, Job Listings)
-│   ├── job_editor.py       # Job Listings dirty detection
-│   ├── funnel.py           # Job Search Progression counts
-│   ├── funnel_workflow.py  # Progression stage-card UI
-│   ├── recruiter_stages.py # CRM workflow stage constants
-│   ├── recruiter_funnel.py # Recruiter progression counts
-│   ├── recruiter_workflow.py  # Recruiter progression stage-card UI
-│   ├── outreach_status.py  # Outreach status/channel constants
-│   ├── outreach_metrics.py # Outreach KPI computation
-│   ├── outreach_prefill.py # Job-linked outreach prefill
-│   ├── outreach_ui.py      # Outreach Intelligence V1 dashboard section
-│   ├── operator_controls_ui.py  # Operational Controls (schedulers + AI refresh trigger)
-│   ├── acquisition_ui.py   # Acquisition Health section
-│   ├── monitor_ui.py       # Operational Monitor Health section
-│   └── ai_refresh_ui.py    # AI Refresh Health section
-├── scraper/                # Multi-source acquisition
-├── alembic/                # Database schema migrations
-├── tests/                  # Unit tests
-├── config/                 # Query/feed catalogs + profiles/
-├── data/                   # SQLite DB, runtime CSV + auth (gitignored)
-├── diagrams/               # Architecture, pipeline, and dashboard visuals
-├── scripts/                # Archive, reset, validation, scheduling, backfill/repair/sweep/probe ops
-│   └── scheduling/         # launchd wrappers + plist templates (production)
-├── archive/                # Point-in-time state snapshots
-└── docs/                   # PRODUCT_STATUS_SUMMARY, REPOSITORY_MAP, PRODUCTION_OPERATIONS, PCR, SQLite plans
-```
-
-**Live runtime files (local only, gitignored under `data/` and `logs/`):**  
-`ai_job_agent.db`, `jobs.csv`, `historical_jobs.csv`, `job_descriptions.csv`, `recruiter_crm.csv`, `linkedin_auth.json`, `instahyre_auth.json`, `.linkedin_query_state.json`, `logs/` (including `logs/scheduled/` for automated runs)
-
----
-
-## Local Setup for Developers
-
-Skip this section if you only need a product walkthrough - see [Quick Start](#quick-start).
-
-### Prerequisites
-
-- Python 3.12+ recommended  
-- Playwright browsers installed (`playwright install`)  
-- OpenAI API key  
-
-### 1. Clone and virtual environment
-
-```bash
-git clone <repository-url>
-cd ai-job-agent
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
-```
-
-### 2. Dependencies
-
-```bash
-pip install -r requirements.txt
-playwright install chromium
-```
-
-### 3. Secrets (never commit)
-
-| File / variable | Purpose |
-|----------------|---------|
-| `OPENAI_API_KEY` | AI batch scoring |
-| `data/linkedin_auth.json` | LinkedIn session (created via scraper login flow) |
-| `data/instahyre_auth.json` | Instahyre session (Playwright storage state) |
-
-### 4. Source run controls
-
-| Variable | Default behavior |
-|----------|------------------|
-| `LINKEDIN_MAX_RUNS` | `5` (orchestrated queries); `0` disables |
-| `INSTAHYRE_MAX_RUNS` | `2` feeds; `0` disables |
-| `GREENHOUSE_MAX_RUNS` | `1`; `0` disables |
-| `LEVER_MAX_RUNS` | `1`; `0` disables |
-| `WEWORKREMOTELY_MAX_RUNS` | `1`; `0` disables |
-
-### 5. Run pipeline and dashboard
-
-```bash
-export OPENAI_API_KEY="your-key-here"
-python main.py
-./scripts/run_dashboard.sh
-```
-
-### 6. Production scheduling (macOS)
-
-Automated acquisition (**09:00 and 21:00 IST**) and lifecycle monitor (**17:00 IST once daily**): [docs/SCHEDULER_SETUP.md](docs/SCHEDULER_SETUP.md). Task 3 activation record: docs/SCHEDULER_SETUP.md. Task 4 cutover record (complete): docs/PRODUCT_STATUS_SUMMARY.md. Requires repo `.env` with `OPENAI_API_KEY` and a logged-in macOS session for Playwright auth.
-
-### 7. Optional debug modes
-
-```bash
-DEBUG_STAGE1=true DEBUG_LINKEDIN=true DEBUG_INSTAHYRE=true \
-DEBUG_IDENTITY=true DEBUG_AI=true python main.py
-```
-
-### Utility scripts
-
-- `scripts/reset_state.sh` - Reset runtime state (SQLite + CSV templates per bootstrap profile)  
-- `scripts/archive_state.sh` - Snapshot current state to `archive/`  
-- `scripts/validate_bootstrap.py` - Validate schema after reset  
-
-### SQLite product memory (default on, D8B)
-
-SQLite (`data/ai_job_agent.db`) is the **default source of truth** for product memory. Acquisition, dashboard, and CRM read/write SQLite by default; CSV files are optional exports for backup and recovery.
-
-```bash
-# Normal acquisition (SQLite enabled by default)
-python main.py
-python scripts/validate_sqlite_parity.py --mode production --fail-on-error
-
-# Backup / handoff + SOT validator (export first when write-primary skips CSV mirrors)
-python scripts/export_csv_memory.py --all
-python scripts/validate_sqlite_parity.py --mode source-of-truth --fail-on-error
-
-# Recovery from archive
-python scripts/import_csv_memory.py
-python scripts/validate_sqlite_parity.py --mode import
-
-# Emergency CSV-only rollback
-SQLITE_ENABLED=0 python main.py
-```
-
-**Full command reference, PASS/WARN/FAIL semantics, and recovery workflows:** [docs/PROJECT_COMMAND_REFERENCE.md §10b](docs/PROJECT_COMMAND_REFERENCE.md#sqlite-product-memory-source-of-truth) (canonical).
-
-Design background: [docs/SQLITE_IMPLEMENTATION_PLAN.md](docs/SQLITE_IMPLEMENTATION_PLAN.md), [docs/SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md](docs/SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md).
-
----
-
-## Disclaimer - Showcase vs Private Operation
-
-This repository is intended as a **professional showcase** of product thinking, pipeline design, and operational maturity. It reflects a real autonomous career intelligence implementation, with the following boundaries:
-
-- **Credentials and live data are not included** - Auth JSON, CSV outputs, and logs stay local under `data/` (gitignored). See [docs/PUBLIC_REPO.md](docs/PUBLIC_REPO.md) before publishing.  
-- **Candidate profile:** `config/profiles/ai_candidate_profile.example.md` (override with `AI_CANDIDATE_PROFILE_PATH`)  
-- **Run caps** may be tuned for validation; adjust `*_MAX_RUNS` for production economics.  
-- **Scraping** depends on third-party site behavior; respect terms of service and rate limits.  
-- **AI scores are advisory** - Not hiring decisions; always verify listings on source sites.  
-
-For interview or portfolio context: emphasize **orchestration**, **incremental memory**, **explainable AI**, and **operator-grade logging** - not raw scrape volume.
+For interview or portfolio context: emphasize **orchestration**, **incremental memory**, **explainable AI**, and **operator-grade visibility** — not raw scrape volume.
 
 ---
 
 ## License
 
-Private / portfolio use unless otherwise specified by the repository owner.
+MIT License — see [LICENSE](LICENSE). Copyright (c) 2026 Vasundhara Bisht.
