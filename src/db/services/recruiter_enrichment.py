@@ -5,13 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from db.models.schema import Job, Recruiter, RecruiterJobLink
 
 RECRUITER_SOURCE_JOB_EDITOR = "job_editor"
 NOT_SPECIFIED_HIRING_MANAGER = "Not Specified"
+HM_SENTINELS: tuple[str, ...] = ("not specified", "unknown", "nan", "none")
 
 
 def _now_utc_naive() -> datetime:
@@ -22,18 +24,30 @@ def generate_recruiter_key(name: str) -> str:
     return str(name or "").strip().lower()
 
 
-def is_valid_recruiter_name(name: str) -> bool:
-    text = str(name or "").strip()
+def is_hiring_manager_sentinel(value: object) -> bool:
+    text = str(value or "").strip()
     if not text:
-        return False
-    return text.lower() not in ("not specified", "unknown", "nan")
+        return True
+    return text.lower() in HM_SENTINELS
+
+
+def incoming_hm_is_sentinel_sql(column: ColumnElement) -> ColumnElement:
+    """SQL expression: True when an incoming hiring_manager value is a sentinel."""
+    return or_(
+        column.is_(None),
+        func.trim(column) == "",
+        func.lower(func.trim(column)).in_(HM_SENTINELS),
+    )
+
+
+def is_valid_recruiter_name(name: str) -> bool:
+    return not is_hiring_manager_sentinel(name)
 
 
 def normalize_hiring_manager(value: object) -> str:
-    text = str(value or "").strip()
-    if not text or text.lower() in ("not specified", "unknown", "nan", "none"):
+    if is_hiring_manager_sentinel(value):
         return NOT_SPECIFIED_HIRING_MANAGER
-    return text
+    return str(value or "").strip()
 
 
 @dataclass(frozen=True)

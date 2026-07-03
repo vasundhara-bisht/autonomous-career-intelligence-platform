@@ -28,7 +28,7 @@ Alternatively export in your shell before each run.
 python scripts/db_init.py
 ```
 
-Creates `data/ai_job_agent.db` with Alembic migrations. The `data/` directory is gitignored except `.gitkeep`.
+Creates `data/ai_job_agent.db` with Alembic migrations (head revision `014_drop_currently_active`). The `data/` directory is gitignored except `.gitkeep`.
 
 ## 4. Candidate profile
 
@@ -71,7 +71,8 @@ python scripts/validate_sqlite_parity.py --mode production --fail-on-error
 ## 7. Dashboard
 
 ```bash
-streamlit run dashboard/app.py
+./scripts/run_dashboard.sh
+# or: streamlit run dashboard/app.py
 ```
 
 Sidebar should indicate SQLite as the data source when defaults are on.

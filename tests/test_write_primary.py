@@ -251,7 +251,6 @@ class DbCsvExportTests(unittest.TestCase):
                     run_id=run.id,
                     source="greenhouse",
                     observed_at=now,
-                    currently_active=True,
                     times_seen=1,
                 )
             )

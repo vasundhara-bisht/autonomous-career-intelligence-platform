@@ -8,6 +8,7 @@ from datetime import date
 import pandas as pd
 
 from agent.pipeline_stages import is_discovery_pipeline_stage
+from listing_visibility import is_listing_open_for_recommended_actions
 from recommended_actions_config import (
     APPLY_TODAY_MAX_DAYS,
     APPLY_WEEK_MAX_DAYS,
@@ -155,11 +156,14 @@ def _prepare_working_frame(
     work["_first_seen"] = _parse_first_seen(
         work["first_seen"] if "first_seen" in work.columns else pd.Series(dtype=object)
     )
-    work["_days_ago"] = work["_first_seen"].apply(
-        lambda ts: _days_ago(ts, reference=reference)
-    )
-    if "currently_active" in work.columns:
-        work["_active"] = work["currently_active"].map(_coerce_bool)
+    if "age_days_derived" in work.columns:
+        work["_days_ago"] = work["age_days_derived"]
+    else:
+        work["_days_ago"] = work["_first_seen"].apply(
+            lambda ts: _days_ago(ts, reference=reference)
+        )
+    if "listing_status" in work.columns:
+        work["_active"] = work.apply(is_listing_open_for_recommended_actions, axis=1)
     else:
         work["_active"] = False
     if "reason" in work.columns:

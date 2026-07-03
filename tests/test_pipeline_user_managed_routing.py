@@ -16,10 +16,10 @@ for entry in (str(_REPO_ROOT), str(_SRC), str(_DASHBOARD)):
 from agent.historical_persistence import lookup_historical_row  # noqa: E402
 from agent.main import (  # noqa: E402
     _historical_job_needs_ai_fallback,
-    _historical_pipeline_stage,
+    materialize_applied_skip_job,
     materialize_fully_processed_job,
 )
-from agent.pipeline_stages import is_user_managed_pipeline_stage  # noqa: E402
+from agent.pipeline_stages import should_skip_expensive_acquisition  # noqa: E402
 
 
 def _route_jobs(index: dict, intake: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
@@ -29,9 +29,13 @@ def _route_jobs(index: dict, intake: list[dict]) -> tuple[list[dict], list[dict]
     for job in intake:
         row = lookup_historical_row(index, job)
         if not row:
-            brand_new.append(job)
+            if should_skip_expensive_acquisition(job, None):
+                materialize_applied_skip_job(job)
+                fully_processed.append(job)
+            else:
+                brand_new.append(job)
             continue
-        if is_user_managed_pipeline_stage(_historical_pipeline_stage(row)):
+        if should_skip_expensive_acquisition(job, row):
             materialize_fully_processed_job(job, row)
             fully_processed.append(job)
         elif _historical_job_needs_ai_fallback(row):
@@ -265,6 +269,42 @@ class FeedRediscoveryIntegrationTests(unittest.TestCase):
         self.assertEqual(len(needs_ai_only), 0)
         self.assertEqual(len(fully_processed), 1)
         self.assertEqual(fully_processed[0]["ai_status"], "not_required")
+
+
+class LinkedInAppliedSkipRoutingTests(unittest.TestCase):
+    def test_linkedin_scrape_applied_routes_fully_processed_without_history(self) -> None:
+        intake = [
+            {
+                "JOB_KEY_V2": "v2:linkedin:999",
+                "title": "PM",
+                "company": "Co",
+                "link": "https://www.linkedin.com/jobs/view/999/",
+                "source": "linkedin",
+                "applied": True,
+            }
+        ]
+        fully_processed, needs_ai_only, brand_new = _route_jobs({}, intake)
+        self.assertEqual(len(brand_new), 0)
+        self.assertEqual(len(needs_ai_only), 0)
+        self.assertEqual(len(fully_processed), 1)
+        self.assertEqual(fully_processed[0]["ai_status"], "not_required")
+        self.assertTrue(fully_processed[0]["applied"])
+
+    def test_instahyre_applied_does_not_skip_without_history(self) -> None:
+        intake = [
+            {
+                "JOB_KEY_V2": "v2:instahyre:abc",
+                "title": "PM",
+                "company": "Co",
+                "link": "https://www.instahyre.com/job-abc/",
+                "source": "instahyre",
+                "applied": True,
+            }
+        ]
+        fully_processed, needs_ai_only, brand_new = _route_jobs({}, intake)
+        self.assertEqual(len(fully_processed), 0)
+        self.assertEqual(len(needs_ai_only), 0)
+        self.assertEqual(len(brand_new), 1)
 
 
 if __name__ == "__main__":

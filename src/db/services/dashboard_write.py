@@ -10,10 +10,12 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from agent.pipeline_stages import is_user_managed_pipeline_stage
 from db.bootstrap import ensure_database_ready
 from db.engine import get_session
 from db.models.schema import Job, Recruiter, UserJobState
 from db.read.engine import dashboard_write_enabled
+from db.services.lifecycle_write import set_monitor_exempt
 from db.services.recruiter_enrichment import (
     normalize_hiring_manager,
     sync_recruiter_from_hiring_manager,
@@ -71,13 +73,17 @@ def upsert_user_job_state_from_editor(
     if job_id is None:
         return False
     existing = session.get(UserJobState, job_id)
+    prior_stage = (
+        str(existing.pipeline_stage or "New").strip() if existing is not None else "New"
+    )
+    new_stage = str(pipeline_stage or "New").strip() or "New"
     payload = {
         "applied": applied,
         "rejected": rejected,
         "interview": interview,
         "offer": offer,
         "notes": str(notes or "").strip() or None,
-        "pipeline_stage": str(pipeline_stage or "New").strip() or "New",
+        "pipeline_stage": new_stage,
         "updated_at": _now_utc_naive(),
     }
     if existing:
@@ -85,6 +91,12 @@ def upsert_user_job_state_from_editor(
             setattr(existing, key, value)
     else:
         session.add(UserJobState(job_id=job_id, **payload))
+    if is_user_managed_pipeline_stage(new_stage) and not is_user_managed_pipeline_stage(
+        prior_stage
+    ):
+        job = session.get(Job, job_id)
+        if job is not None:
+            set_monitor_exempt(session, job)
     return True
 
 
@@ -138,6 +150,9 @@ def mark_job_applied(*, job_key_v2: str = "", job_key: str = "") -> bool:
         )
         if not ok:
             return False
+        job = session.get(Job, job_id)
+        if job is not None:
+            set_monitor_exempt(session, job)
         session.commit()
     _maybe_sync_csv_exports(historical=True, crm=False)
     return True

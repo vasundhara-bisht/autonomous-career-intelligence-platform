@@ -8,26 +8,15 @@ from datetime import date
 import pandas as pd
 
 from agent.pipeline_stages import is_user_managed_pipeline_stage
+from listing_visibility import (
+    apply_age_bucket_columns,
+    apply_listing_visibility,
+)
 from loaders import apply_historical_display_columns
 
 
 def is_user_managed_stage(stage: object) -> bool:
     return is_user_managed_pipeline_stage(stage)
-
-
-def apply_activity_visibility(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep active jobs plus user-managed pipeline stages (CRM visibility)."""
-    if df.empty:
-        return df
-    out = df.copy()
-    if "pipeline_stage" not in out.columns:
-        out["pipeline_stage"] = "New"
-    out["pipeline_stage"] = out["pipeline_stage"].fillna("New").astype(str).str.strip()
-    managed = out["pipeline_stage"].map(is_user_managed_stage)
-    if "currently_active" not in out.columns:
-        return out.loc[managed].copy()
-    active = out["currently_active"].fillna(False).astype(bool)
-    return out.loc[active | managed].copy()
 
 
 def apply_discovery_score_filter(df: pd.DataFrame, min_score: int) -> pd.DataFrame:
@@ -109,7 +98,7 @@ def apply_date_range_filter(
 
 
 def build_dashboard_df(historical_state_df: pd.DataFrame) -> pd.DataFrame:
-    """Display prep + activity visibility (system rules only; no sidebar filters)."""
+    """Display prep + listing-status visibility (system rules only; no sidebar filters)."""
     display_df = apply_historical_display_columns(historical_state_df.copy())
 
     if "pipeline_stage" not in display_df.columns:
@@ -119,7 +108,8 @@ def build_dashboard_df(historical_state_df: pd.DataFrame) -> pd.DataFrame:
             display_df["pipeline_stage"].fillna("New").astype(str).str.strip()
         )
 
-    return apply_activity_visibility(display_df)
+    display_df = apply_age_bucket_columns(display_df)
+    return apply_listing_visibility(display_df)
 
 
 @dataclass(frozen=True)

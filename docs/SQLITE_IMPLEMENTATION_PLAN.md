@@ -1,6 +1,6 @@
 # SQLite Implementation Plan
 
-> **Migration complete (D8B, 2026-06-03).** For daily operations use [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md). For system status see [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md). This document is **design history + rollback reference** — not the live operator guide.
+> **ARCHIVE — D0–D8B migration record only (2026-06-03).** Alembic head and schema evolution after D8B live in [`alembic/versions/`](../alembic/versions/) (head: `014_drop_currently_active`) and [SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md](./SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md). For daily operations use [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md). For system status see [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md). Checkpoint tables below that cite head `004` are historical evidence — do not update inline.
 >
 > **Terminology:** **Phase B** in this document means the **CSV importer** (`import_csv_memory.py`). **Phase B Interested sync** in pipeline code (`instahyre.py`, `dual_write.py`) is a separate Instahyre post-acquisition feature — see [PROJECT_COMMAND_REFERENCE.md §5](./PROJECT_COMMAND_REFERENCE.md#5-instahyre-specific-controls).
 
@@ -117,7 +117,7 @@ Phase I  — Dashboard read switch (D1/D6)                        ✓
 Phase J  — SQLite source of truth (D8B)                         ✓
 ```
 
-Promotion evidence: [`PRODUCT_STATUS_SUMMARY.md`](PRODUCT_STATUS_SUMMARY.md).
+Promotion evidence: [`PRODUCTION_OPERATIONS.md`](PRODUCTION_OPERATIONS.md).
 
 ---
 
@@ -628,7 +628,7 @@ Dashboard reads CRM via `active_recruiters_view` and writes user/recruiter state
 
 Evidence-only phase; no default flag changes. Verdict: `READY_FOR_D8B`.
 
-- Readiness report: [`logs/d8a-promotion-readiness-20260603.md`](../logs/d8a-promotion-readiness-20260603.md)
+- Readiness report: [`logs/d8a-promotion-readiness-20260603.md`]()
 - Cap drill: `DEBUG_LIMIT=2`, 66 `skipped_by_cap` rows — `logs/d8a-cap-run-retry-20260603-052631.log`
 - Live recovery: archive → bootstrap reset → import → `--mode import` PASS
 - Rollback: `SQLITE_ENABLED=0` — `logs/d8a-rollback-20260603-131551.log`
@@ -639,7 +639,7 @@ Evidence-only phase; no default flag changes. Verdict: `READY_FOR_D8B`.
 1. [`src/db/config.py`](../src/db/config.py) — defaults flipped: `SQLITE_ENABLED`, `DUAL_WRITE`, `PIPELINE_READ`, `WRITE_PRIMARY`, `READ`, `DASHBOARD_WRITE` → `True`; export historical/descriptions/CRM → `False`; jobs export → `True`.
 2. Documentation posture updated (§10b, README, §16).
 3. Post-flip smoke (no env overrides): `logs/d8b-post-flip-run-20260603-134740.log`, SOT PASS — `logs/d8b-post-flip-sot-20260603-134753.log`.
-4. Formal sign-off: [`docs/PRODUCT_STATUS_SUMMARY.md`](PRODUCT_STATUS_SUMMARY.md).
+4. Formal sign-off: [`docs/PRODUCTION_OPERATIONS.md`](PRODUCTION_OPERATIONS.md).
 5. Post-remediation flag-unification smoke: see `logs/d8b-remediation-post-flip-run-*.log` and `logs/d8b-remediation-sot-*.log` (after `sqlite_flag()` gate fix).
 
 **Next:** Optional CI wiring; Postgres migration (out of scope).
@@ -731,7 +731,7 @@ If any checkpoint fails: **stop**, roll back to last good flag combination (§11
 
 ## 16. Definition of Done — SQLite Becomes Source of Truth
 
-**Status: COMPLETE (D8B, 2026-06-03).** Evidence: [`logs/d8a-promotion-readiness-20260603.md`](../logs/d8a-promotion-readiness-20260603.md), [`PRODUCT_STATUS_SUMMARY.md`](PRODUCT_STATUS_SUMMARY.md).
+**Status: COMPLETE (D8B, 2026-06-03).** Evidence: D8B sign-off (private operator archive)(), [`PRODUCTION_OPERATIONS.md`](PRODUCTION_OPERATIONS.md).
 
 SQLite is promoted from "shadow memory" to **source of truth**. All gates below satisfied:
 

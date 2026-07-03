@@ -99,7 +99,6 @@ def _seed_minimal_db(db_path: Path) -> None:
                 run_id=run_id,
                 query_run_id=query_run.id,
                 observed_at=now,
-                currently_active=True,
                 times_seen=2,
             )
         )

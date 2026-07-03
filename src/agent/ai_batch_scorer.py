@@ -6,6 +6,8 @@ import traceback
 import math
 from typing import Any
 
+from agent.ai_runtime_config import resolve_openai_model
+
 api_key = os.getenv("OPENAI_API_KEY")
 
 if api_key:
@@ -211,7 +213,7 @@ Scoring:
             _ai_debug("=" * 60)
 
             response = client.responses.create(
-                model="gpt-4o-mini",
+                model=resolve_openai_model(),
                 input=prompt
             )
 

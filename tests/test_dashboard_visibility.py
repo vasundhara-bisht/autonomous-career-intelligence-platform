@@ -15,8 +15,8 @@ for entry in (str(_REPO_ROOT), str(_REPO_ROOT / "dashboard")):
 
 from app import (  # noqa: E402
     USER_MANAGED_PIPELINE_STAGES,
-    _apply_activity_visibility,
     _apply_discovery_score_filter,
+    _apply_listing_visibility,
     _is_user_managed_stage,
 )
 
@@ -26,14 +26,14 @@ def _row(
     stage: str = "New",
     is_ai_scored: bool = False,
     score: float = 0,
-    currently_active: bool = True,
+    listing_status: str = "open",
 ) -> dict:
     return {
         "JOB_KEY": "k1",
         "pipeline_stage": stage,
         "is_ai_scored": is_ai_scored,
         "score": score,
-        "currently_active": currently_active,
+        "listing_status": listing_status,
     }
 
 
@@ -47,20 +47,20 @@ class UserManagedStageTests(unittest.TestCase):
         self.assertFalse(_is_user_managed_stage("Saved"))
 
 
-class ActivityVisibilityTests(unittest.TestCase):
-    def test_inactive_applied_passes(self) -> None:
-        df = pd.DataFrame([_row(stage="Applied", currently_active=False)])
-        out = _apply_activity_visibility(df)
-        self.assertEqual(len(out), 1)
-
-    def test_inactive_new_fails(self) -> None:
-        df = pd.DataFrame([_row(stage="New", currently_active=False)])
-        out = _apply_activity_visibility(df)
+class ListingVisibilityTests(unittest.TestCase):
+    def test_removed_new_hidden(self) -> None:
+        df = pd.DataFrame([_row(stage="New", listing_status="removed")])
+        out = _apply_listing_visibility(df)
         self.assertEqual(len(out), 0)
 
-    def test_active_new_passes(self) -> None:
-        df = pd.DataFrame([_row(stage="New", currently_active=True)])
-        out = _apply_activity_visibility(df)
+    def test_closed_applied_visible(self) -> None:
+        df = pd.DataFrame([_row(stage="Applied", listing_status="closed")])
+        out = _apply_listing_visibility(df)
+        self.assertEqual(len(out), 1)
+
+    def test_open_new_visible(self) -> None:
+        df = pd.DataFrame([_row(stage="New", listing_status="open")])
+        out = _apply_listing_visibility(df)
         self.assertEqual(len(out), 1)
 
 

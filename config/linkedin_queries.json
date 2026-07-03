@@ -243,7 +243,12 @@
       "keywords": "product manager",
       "location": "India",
       "url_mode": "qualification_landing",
-      "landing_url": "https://www.linkedin.com/jobs/search-results/?currentJobId=PLACEHOLDER_JOB_001&showHowYouFit=HOW_YOU_FIT&keywords=Product%20Manager&origin=QUALIFICATION_LANDING&originToLandingJobPostings=PLACEHOLDER_JOB_001%2CPLACEHOLDER_JOB_002%2CPLACEHOLDER_JOB_003&geoId=90009633",
+      "navigation": {
+        "entry_url": "https://www.linkedin.com/jobs/",
+        "keywords": "Product Manager",
+        "geo_id": "90009633"
+      },
+      "landing_url": "",
       "filter_profile": "qualification_landing",
       "enabled": true
     },
@@ -254,7 +259,7 @@
       "keywords": "product manager",
       "location": "India",
       "url_mode": "search_results_landing",
-      "landing_url": "https://www.linkedin.com/jobs/search-results/?currentJobId=PLACEHOLDER_JOB_002&keywords=product%20manager&origin=JOB_SEARCH_PAGE_JOB_FILTER&referralSearchId=PLACEHOLDER_REFERRAL_SEARCH_ID&f_TPR=r604800&f_AL=true",
+      "landing_url": "https://www.linkedin.com/jobs/search-results/?currentJobId=PLACEHOLDER_JOB_ID&keywords=product%20manager&origin=JOB_SEARCH_PAGE_JOB_FILTER&referralSearchId=UD4uUZVtyT82P2s6YoacAA%3D%3D&f_TPR=r604800&f_AL=true",
       "filter_profile": "easy_apply_7d",
       "enabled": true
     },

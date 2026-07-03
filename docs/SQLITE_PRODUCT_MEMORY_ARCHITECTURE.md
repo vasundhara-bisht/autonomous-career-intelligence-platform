@@ -197,6 +197,55 @@ Valid overwrite/update behavior:
 
 ---
 
+## 6A. Hiring Manager Merge (Dual-Write)
+
+Runtime acquisition dual-write (`_upsert_jobs` in `src/db/services/dual_write.py`) must not clobber a real `jobs.hiring_manager` with scrape sentinels.
+
+Sentinel values (case-insensitive, trim-first): `NULL`, blank, `Not Specified`, `Unknown`, `nan`, `none`.
+
+| Incoming scrape value | Existing DB value | Desired behavior |
+|---|---|---|
+| real name | sentinel | update to incoming |
+| real name | real name | update to incoming |
+| sentinel | real name | preserve existing |
+| sentinel | sentinel | preserve existing (no meaningful change) |
+
+Implementation: SQL `CASE` on conflict — when incoming is sentinel, keep `Job.hiring_manager`; otherwise accept `excluded.hiring_manager`. Helper: `is_hiring_manager_sentinel()` / `incoming_hm_is_sentinel_sql()` in `src/db/services/recruiter_enrichment.py`.
+
+Dashboard HM edits and Task C backfill apply paths are separate; this rule applies to acquisition runtime upserts only.
+
+---
+
+## 6B. Posted Date Fields (Dual-Write)
+
+Runtime acquisition derives ISO `posted_at_date` and `age_days` from relative `time_posted` ([`src/agent/posted_date_derive.py`](../src/agent/posted_date_derive.py)), wired in `main.py` and `_upsert_jobs`.
+
+On conflict, dual-write preserves existing non-null values:
+
+| Field | Merge rule |
+|---|---|
+| `posted_at_date` | `COALESCE(incoming, existing)` |
+| `age_days` | `COALESCE(incoming, existing)` |
+
+**Operator backfill (not schema changes):** [`scripts/backfill_posted_at_date.py`](../scripts/backfill_posted_at_date.py) (anchor from `last_seen`); [`scripts/backfill_linkedin_posted_dates.py`](../scripts/backfill_linkedin_posted_dates.py) (Playwright re-scrape for `time_posted=Unknown`).
+
+**Dashboard:** Job Listings Posted column still uses `last_seen` fallback — display phase is future.
+
+---
+
+## 6C. HM Repair Tooling (One-Time Operator)
+
+Complement to §6A forward protection. Both write **`jobs.hiring_manager` only**; `recruiter_job_links` remain append-only.
+
+| Task | Cohort | Script |
+|---|---|---|
+| **C — Backfill** | Sentinel HM, **no** `recruiter_job_links` | `scripts/backfill_linkedin_hiring_managers.py` |
+| **E — Overwrite repair** | Sentinel HM, **exactly one** link, valid recruiter name | `scripts/repair_linkedin_hm_overwrite_cohort.py` |
+
+Canonical commands: [PROJECT_COMMAND_REFERENCE.md §8](./PROJECT_COMMAND_REFERENCE.md).
+
+---
+
 ## 7. `ai_status` Semantics
 
 Current CSV semantics should evolve into database-backed AI lifecycle semantics.
@@ -256,12 +305,72 @@ Post-feed synchronization phase (when `INSTAHYRE_MAX_RUNS ≠ 0`). List-only har
 
 1. `jobs` — minimal list metadata from Interested filter cards
 2. `user_job_state` — `_merge_user_job_state_payload` (Applied promotion; stage protection for Saved+)
-3. Early `acquisition_run` + `job_observations` (`query_id=interested_sync`) — updates `first_seen` / `last_seen` / `currently_active` even when stage protected
+3. Early `acquisition_run` + `job_observations` (`query_id=interested_sync`) — updates `first_seen` / `last_seen` even when stage protected
 4. `ai_evaluations` — `not_required` rows for user-managed stages
 
 **Export cohort isolation:** Interested-only jobs in `historical_jobs_view`; excluded from `current_jobs_view` / `jobs.csv` until picked up by a full acquisition dual-write.
 
 Operator detail: [PROJECT_COMMAND_REFERENCE.md §5](./PROJECT_COMMAND_REFERENCE.md#5-instahyre-specific-controls).
+
+---
+
+## 7D. AI Refresh Evaluations (re-score path)
+
+Separate orchestration entry from acquisition. **Does not** scrape, fetch descriptions, or call `dual_write_runtime_snapshot`.
+
+| Component | Role |
+|-----------|------|
+| `scripts/run_ai_refresh.py` | CLI entry: cohort load → hydrate from `job_descriptions` → `run_batch_ai_scoring` → append evals |
+| `src/agent/ai_scoring_orchestrator.py` | Shared batch scoring loop (also used by `main.py` after description fetch) |
+| `src/db/read/ai_refresh_cohort.py` | Preset cohort selection (`backlog`, `discovery`) |
+| `ai_refresh_runs` | Run lifecycle + stats (preset, cohort_size, scored_count, persist_skipped_count, batch_failures) |
+| `ai_evaluations.ai_refresh_run_id` | Optional FK linking refresh-scored rows to their run |
+
+**Dashboard (AI Refresh Health):** Two-row KPI layout for the latest completed run; history table omits cap-skipped operator metrics. Operator Controls preview shows cohort matched, eligible (with description), and estimated batches only.
+
+**Evaluation write policy (rescoring):**
+
+- Incoming scored job with score + reason → **INSERT** new `ai_evaluations` row (`model=ai_refresh`, `evaluated_at=now`).
+- `latest_ai_evaluations_view` selects newest row per `job_id` — dashboard and `historical_jobs_view` pick up the refresh automatically.
+- Jobs with `ai_status=not_required` are excluded from cohort and skipped on write (never downgraded).
+- No updates to `jobs`, `job_observations`, or recruiter tables from refresh.
+
+**Cohort presets (summary):**
+
+| Preset | Intent |
+|--------|--------|
+| `backlog` | Discovery stages; `pending` / `skipped_by_cap` / incomplete `scored`; any listing status |
+| `discovery` | Open `New` with persistable description; includes healthy `scored` for profile refresh |
+
+Operator detail: [PROJECT_COMMAND_REFERENCE.md §10](./PROJECT_COMMAND_REFERENCE.md#ai-refresh-scriptsrun_ai_refreshpy) and [PRODUCTION_OPERATIONS.md §5.1](./PRODUCTION_OPERATIONS.md#51-refresh-ai-evaluations-re-score-without-scrape).
+
+---
+
+## 7E. LinkedIn Applied auto-promotion
+
+When the lifecycle monitor detects that the operator has applied on LinkedIn:
+
+1. **`promote_job_to_applied_if_eligible`** sets `user_job_state.pipeline_stage=Applied` for discovery-stage jobs.
+2. **`set_monitor_exempt`** sets `jobs.listing_status=monitor_exempt` (Scheduler B skips the job).
+3. **`should_skip_expensive_acquisition`** routes the job through the fully-processed acquisition path on subsequent runs.
+
+Contrast with Instahyre Interested sync (acquisition-time list harvest) and dashboard **Applied ✓** (manual Recommended Actions). Full operator detail: PRODUCT_STATUS_SUMMARY.md.
+
+---
+
+## 7C. Job listing availability (`listing_status`) — historical note
+
+**Current model (Task 4 / TD10):** Listing availability is tracked on `jobs.listing_status`, written by the lifecycle monitor (Scheduler B). Dashboard and Recommended Actions use `listing_status` exclusively (`open` + `closed` visible in Job Listings; `removed` hidden; RA `open` only).
+
+**Retired (pre–Task 4):** Post-acquisition inactivity sweep on `job_observations.currently_active` — removed in migration `014_drop_currently_active`. See PRODUCT_STATUS_SUMMARY.md.
+
+**Not the same as:**
+
+- **Recommended Actions age** — uses `first_seen` only (Needs Review queue).
+- **Posted display** — Job Listings Posted column uses `last_seen` fallback, not `posted_at_date` yet.
+- **CRM `recruiter_stage`** — recruiter workflow, not acquisition sighting.
+
+**Dashboard visibility:** `listing_status` drives discovery visibility; user-managed pipeline stages remain visible per product §5A.
 
 ---
 
@@ -359,6 +468,7 @@ Once SQLite is active, CSVs should be regenerable from the database.
 | Table | Purpose | Source Of Truth? |
 |---|---|---|
 | `acquisition_runs` | One row per pipeline run | Yes for run history |
+| `ai_refresh_runs` | One row per manual/CLI AI refresh run (re-score without scrape) | Yes for refresh audit |
 | `acquisition_query_runs` | LinkedIn query/InstaHyre feed execution records | Yes for query/feed history |
 
 **Run provenance:** Production may trigger the pipeline manually (`python main.py`) or via macOS launchd ([SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md)). Both paths use the same dual-write and SQLite gates; the scheduler is external orchestration only.
@@ -396,9 +506,33 @@ When an operator edits **Hiring Manager** in Job Listings with `SQLITE_DASHBOARD
 
 Implementation: [`src/db/services/recruiter_enrichment.py`](../src/db/services/recruiter_enrichment.py) via [`dashboard_write.persist_dashboard_job_edits()`](../src/db/services/dashboard_write.py). CRM `jobs_connected` in `active_recruiters_view` counts live links from `recruiter_job_links`, not `jobs.hiring_manager` alone.
 
-Acquisition-time recruiter extract (Instahyre detail pages) uses the same tables via dual-write; dashboard HM edit is a separate job-bound path.
+Acquisition-time recruiter extract (Instahyre detail pages) uses the same tables via dual-write; dashboard HM edit is a separate job-bound path. **LinkedIn acquisition** extracts `hiring_manager` via primary BEM selector + flagship3 poster-section fallback ([`scraper/linkedin.py`](../scraper/linkedin.py)); dual-write §6A prevents sentinel re-scrapes from clobbering real values.
 
 **Outreach schema vs CRM UI:** `recruiters` stores `outreach_sent`, `recruiter_replied`, `last_outreach_date`, `last_response_date`, and `touchpoint_count` (normalized in dashboard loaders). The Streamlit CRM table does **not** surface these columns — operator edits are limited to recruiter stage and HM-driven enrichment today.
+
+### Outreach Intelligence V1
+
+Separate from Recruiter Intelligence — **no CRM coupling**, no FK to `jobs` or `recruiters`.
+
+| Table | Role |
+|-------|------|
+| `outreach_attempts` | One row = one outreach attempt; opportunity-centric outreach attempt log |
+
+Key fields: `person_name`, `company`, `outreach_channel`, `status`, `date_contacted`, optional `follow_up_date`, `notes`, optional soft link `opportunity_id` (`job_key_v2` text) and `opportunity_url` snapshot. **V1.1:** `hiring_signal_type` (required on new creates; nullable for legacy rows) and optional `hiring_signal_url`. **V1.3:** `outreach_type` (`hiring_signal` vs `job_outreach`).
+
+**Hiring signal types (9):** `linkedin_hiring_post`, `founder_post`, `recruiter_message`, `whatsapp_referral`, `personal_referral`, `mentor_referral`, `direct_outreach`, `job_listing` (Job Outreach path), `other`.
+
+**V1.2 ingestion:** LinkedIn post URL Fetch Details in Add Outreach — modules under [`src/outreach/`](../src/outreach/); Playwright + OpenAI prefill; Save is only persistence action.
+
+**V1.3 Job Outreach:** DB-driven prefill from job row + description + recruiter ([`src/db/read/job_outreach.py`](../src/db/read/job_outreach.py), [`src/agent/job_outreach_prefill.py`](../src/agent/job_outreach_prefill.py)); no Playwright.
+
+**Creation (dashboard only):** manual + job-linked creation via Add Outreach form (optional Link to job from Job Listings cohort / `dashboard_editor_df`). New outreach requires hiring signal type. No auto-create on Applied or HM edit. No recruiter-originated or person-first workflows.
+
+**Read vs write:** loads when `SQLITE_READ=1`; add/edit require `SQLITE_DASHBOARD_WRITE=1` (read-only KPIs, filters, and table when writes are off).
+
+**Reset profiles:** `outreach_attempts` truncated on `bootstrap` / `full`; **preserved** on `crm-preserving` and `acquisition` (operator memory survives job wipes).
+
+Implementation: [`src/db/services/outreach_write.py`](../src/db/services/outreach_write.py), [`dashboard/outreach_ui.py`](../dashboard/outreach_ui.py). Does **not** write to `recruiters.outreach_*` columns.
 
 ### Dashboard write-back paths (D8B)
 
@@ -408,6 +542,7 @@ Acquisition-time recruiter extract (Instahyre detail pages) uses the same tables
 | Hiring Manager edit (3B) | `sync_recruiter_from_hiring_manager()` | `jobs`, `recruiters`, `recruiter_job_links` |
 | Recruiter CRM stage edit | recruiter stage upsert in `dashboard_write.py` | `recruiters` |
 | Recommended Actions **Applied ✓** (3A.1) | `mark_job_applied()` | `user_job_state` (`pipeline_stage=Applied`, `applied=True`) |
+| Outreach Intelligence V1–V1.3 add / table edit | `outreach_write.py` | `outreach_attempts` only |
 
 Implementation: [`src/db/services/dashboard_write.py`](../src/db/services/dashboard_write.py). Requires `SQLITE_DASHBOARD_WRITE=1`.
 

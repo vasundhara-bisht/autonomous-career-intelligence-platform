@@ -101,7 +101,7 @@ Controlled in `scraper/acquisition_gate.py` and `src/agent/main.py`.
 | `LINKEDIN_RESET_ABORT_THRESHOLD` | 2 | Abort after repeated list resets | Stability tuning | Heavy |
 | `LINKEDIN_PLAYWRIGHT_TRACE=1` | off | Records Playwright trace zip | Deep LinkedIn debugging | Heavy |
 | `LINKEDIN_PLAYWRIGHT_TRACE_PATH` | `linkedin_playwright_trace.zip` | Output path for trace | With trace enabled | Heavy |
-| `LINKEDIN_QUALIFICATION_LANDING_URL` | from `config/linkedin_queries.json` | Overrides the priority anchor How You Fit / Top Applicant URL without editing JSON | Refresh personalized feed URL quickly | Heavy |
+| `LINKEDIN_QUALIFICATION_LANDING_URL` | unset (navigation mode) | Emergency override: direct `goto` to a full copied How You Fit URL (bypasses in-browser navigation) | One-off debugging only | Heavy |
 | `LINKEDIN_BROAD_PM_LANDING_URL` | from `config/linkedin_queries.json` | Overrides `broad_pm_easy_apply_7d` search-results URL without editing JSON | Refresh broad PM Easy Apply feed URL | Heavy |
 | `LINKEDIN_PRIORITY_FOLLOWUP` | on (config) | Set to `0`/`false`/`off` to skip priority follow-up query after anchor | Single-query anchor-only sessions | Heavy |
 
@@ -109,15 +109,11 @@ LinkedIn scraper opens a **visible browser** (`headless=False`) for login/sessio
 
 ### Priority anchor: Top Applicant / How You Fit
 
-The default priority anchor (`top_applicants_anchor`) uses `url_mode: qualification_landing` — a full LinkedIn **search-results** URL with `showHowYouFit=HOW_YOU_FIT` and `origin=QUALIFICATION_LANDING`, not the old `f_JIYN` low-applicant search approximation.
+The default priority anchor (`top_applicants_anchor`) uses `url_mode: qualification_landing` with **in-browser navigation** from a stable entry (`https://www.linkedin.com/jobs/`) to the personalized How You Fit feed — not the old `f_JIYN` low-applicant search approximation.
 
-**Refresh the landing URL** when fit drifts (jobs close, feed changes):
+Navigation is configured under `navigation` in [`config/linkedin_queries.json`](../config/linkedin_queries.json) (`entry_url`, `keywords`, `geo_id`). The scraper tries a job-ID-stripped qualification URL, then UI clicks (Top applicant / How you fit) if needed. No periodic `landing_url` refresh is required.
 
-1. In LinkedIn (logged in), open your Top Applicant / How You Fit PM feed and copy the browser URL.
-2. Update `landing_url` on query `top_applicants_anchor` in `config/linkedin_queries.json`, **or** set `LINKEDIN_QUALIFICATION_LANDING_URL` for a one-off run.
-3. Before production runs using the JSON URL, **`unset LINKEDIN_QUALIFICATION_LANDING_URL`** so the env does not override config.
-
-Canonical anchor `landing_url` (2026-06): `currentJobId=PLACEHOLDER_JOB_001`, `originToLandingJobPostings=PLACEHOLDER_JOB_001,PLACEHOLDER_JOB_002,PLACEHOLDER_JOB_003`.
+**Emergency override only:** set `LINKEDIN_QUALIFICATION_LANDING_URL` to a full copied browser URL to bypass navigation (legacy direct `goto`). Production scheduled runs **`unset`** this variable — see [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md).
 
 **LinkedIn-only anchor validation** (requires `data/linkedin_auth.json`):
 
@@ -126,7 +122,7 @@ INSTAHYRE_MAX_RUNS=0 GREENHOUSE_MAX_RUNS=0 LEVER_MAX_RUNS=0 WEWORKREMOTELY_MAX_R
 LINKEDIN_MAX_RUNS=1 DEBUG_LINKEDIN=1 python main.py
 ```
 
-Expect: first query `Top Applicant / How You Fit PM`, `linkedin_filter_profile=qualification_landing`, jobs collected &gt; 0, final URL contains `search-results` or `showHowYouFit`.
+Expect: first query `Top Applicant / How You Fit PM`, `linkedin_filter_profile=qualification_landing`, jobs collected &gt; 0, `[LinkedInDiag]` logs show `qualification_nav_*`, final URL contains `search-results` or `showHowYouFit`.
 
 ### Priority follow-up: Broad PM Easy Apply 7d
 
@@ -180,27 +176,36 @@ When `INSTAHYRE_MAX_RUNS` is not `0`, after feed acquisition `main.py` runs **In
 
 **Business rule:** membership in Instahyre's Interested filter (`/candidate/opportunities/?matching=true&status=1`) means the job is **Applied** — stubs set `applied=True`; persist promotes `""` / `New` → `Applied` when incoming is applied.
 
-**Harvest (list-only):**
+**Harvest (list + lightweight detail enrichment):**
 - Feed id `interested_sync` (code-only; **not** in `config/instahyre_feeds.json`).
-- Paginated list harvest via `_collect_feed_opportunity_cards` — **no detail pages**, no Stage-1, no descriptions, no OpenAI `batch_score_jobs`.
+- Paginated list harvest via `_collect_feed_opportunity_cards`, then **brief per-job detail opens** (on by default) for lightweight metadata only — no descriptions, no Stage-1, no OpenAI `batch_score_jobs`.
 - Shares pagination env vars with feeds (`INSTAHYRE_MAX_PAGES`, `INSTAHYRE_PAGE_*`, etc.).
 - Stubs are **not** appended to `all_jobs`; they bypass normalize → routing → Stage-1 → dedup → AI.
 
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `INSTAHYRE_INTERESTED_DETAIL_ENRICH` | `1` | Set `0` to restore list-only Interested sync (no detail pages) |
+| `INSTAHYRE_INTERESTED_DETAIL_SETTLE_MS` | `1200` | Post-goto wait on each Interested detail page (ms) |
+
+**Enriched fields (detail + list-card tags):** hiring manager / recruiter name, posted date (`posted_at_date`, `age_days`), company, location, employment type, experience level, workplace type (from `ul.candidate-opp-keywords` tags).
+
+**SQLite persist via Interested sync:** `title`, `company`, `location`, `hiring_manager`, `posted_at_date`, `age_days` (existing `jobs` columns). `employment_type`, `experience_level`, `workplace_type` are captured on the job dict only (no `jobs` column yet).
+
 **Persist order** (`persist_instahyre_interested_sync` in `dual_write.py`):
-1. `jobs` — minimal list metadata
+1. `jobs` — list + enriched metadata (HM/posted merge rules apply on re-sync)
 2. `user_job_state` — merge with stage protection (see below)
 3. Dedicated early `acquisition_run` (`run_notes=instahyre_interested_sync`) + `acquisition_query_runs` + `job_observations` (`query_id=interested_sync`)
 4. `ai_evaluations` — `_upsert_not_required_ai_evaluations_for_user_managed_jobs` (`ai_status=not_required`, `model=instahyre_interested_sync`); does not clobber existing `scored` or `not_required` rows
 
-**Stage protection** (`_merge_user_job_state_payload`): preserves snapshot for `rejected`, `Rejected`, and stages in `{Saved, Applied, HR Screen, Interview, Final Round, Offer, Rejected, Ghosted}` unless promoting `New`/`""` with incoming `applied=True`. Observations still update `first_seen` / `last_seen` / `currently_active` even when stage is protected.
+**Stage protection** (`_merge_user_job_state_payload`): preserves snapshot for `rejected`, `Rejected`, and stages in `{Saved, Applied, HR Screen, Interview, Final Round, Offer, Rejected, Ghosted}` unless promoting `New`/`""` with incoming `applied=True`. Observations still update `first_seen` / `last_seen` even when stage is protected.
 
 **Export cohort:** Interested-only jobs appear in `historical_jobs_view` but **not** in `current_jobs_view` / `jobs.csv` (tied to end-of-pipeline dual-write, not the early sync run).
 
 **Within-run routing:** jobs with user-managed `pipeline_stage` (e.g. `Applied` from Interested sync) that reappear in feed acquisition route to **fully_processed** and skip AI (`not_required`).
 
-**Terminal log block:** `🟣 INSTAHYRE INTERESTED SYNC SUMMARY` — fields include cards harvested, DB jobs upserted, observations written, **`protected_count`**, **`not_required_evals_written`**, **`sync_run_id`**.
+**Terminal log block:** `🟣 INSTAHYRE INTERESTED SYNC SUMMARY` — fields include cards harvested, **`detail_enrich attempted` / `detail enriched`**, DB jobs upserted, observations written, **`protected_count`**, **`not_required_evals_written`**, **`sync_run_id`**.
 
-**Does not run:** Stage-1, OpenAI batch scoring, description fetch, recruiter extraction. **Does** persist `ai_evaluations` rows as `not_required` for user-managed CRM stages (not the same as running AI scoring).
+**Does not run:** Stage-1, OpenAI batch scoring, description fetch, recruiter CRM link extraction. **Does** persist `ai_evaluations` rows as `not_required` for user-managed CRM stages (not the same as running AI scoring).
 
 **Isolated Interested sync validation:**
 
@@ -212,6 +217,7 @@ python main.py
 
 python -m unittest \
   tests.test_instahyre_interested_sync \
+  tests.test_instahyre_interested_enrichment \
   tests.test_instahyre_applied_status \
   tests.test_dual_write_applied_merge \
   tests.test_materialize_applied_merge \
@@ -275,7 +281,7 @@ After identity routing, look for:
 - `Historical lookup stats (routing)` — V2 hits vs legacy fallback during historical lookup
 - `Intake (raw scraped jobs) unresolved identity` — unresolved tier mix on all scraped jobs
 - `Brand-new description pass` / `Needs-AI-only cache hydration` — separate description pools (not one combined “reused” total)
-- `AI queue cap (DEBUG_LIMIT)` — candidates vs capped vs skipped; cap skip note only when skipped > 0
+- `AI scoring queue` — total AI candidates queued for scoring
 - `Export composition (this session)` — fully_processed + AI-scored counts before final merge
 - `PIPELINE METRICS` — stage funnel counts; `PIPELINE SUMMARY` — routing + AI only (points to METRICS)
 - `Scope: intake-wide` / `Scope: export cohort only` — clarifies routing lookup vs export health V2 rates
@@ -308,12 +314,11 @@ DEBUG_IDENTITY=true DEBUG_AI=true python main.py
 
 ## 7. Code-level tuning (not environment variables)
 
-Most pipeline tuning lives in `src/agent/main.py` (code edit). Profile and AI cap also support env overrides.
+Most pipeline tuning lives in `src/agent/main.py` (code edit). Profile and AI batch size also support env overrides.
 
 | Setting | Location | Default | What it does |
 |---------|----------|---------|--------------|
-| `DEBUG_LIMIT` | `agent/ai_runtime_config.py` | `300` | Max jobs sent to AI scoring per run; override: `export DEBUG_LIMIT=50` |
-| `BATCH_SIZE` | `agent/ai_runtime_config.py` | `15` | Jobs per OpenAI batch; override: `BATCH_SIZE=20 python main.py` |
+| `BATCH_SIZE` | `agent/ai_runtime_config.py` | `20` | Jobs per OpenAI batch; override: `BATCH_SIZE=25 python main.py` |
 | **AI candidate profile** | [`config/profiles/ai_candidate_profile.example.md`](../config/profiles/ai_candidate_profile.example.md) | Loaded by `load_candidate_profile()`; override: `AI_CANDIDATE_PROFILE_PATH` — see [config/profiles/README.md](../config/profiles/README.md) |
 
 Scoring rules and JSON output format stay in [`src/agent/ai_batch_scorer.py`](../src/agent/ai_batch_scorer.py) (not in the profile file). Stage-1 filtering does **not** use the profile text.
@@ -328,18 +333,103 @@ Scoring rules and JSON output format stay in [`src/agent/ai_batch_scorer.py`](..
 
 | Command | What it does | When to use | Safety |
 |---------|--------------|-------------|--------|
-| `streamlit run dashboard/app.py` | Starts interactive dashboard (D8B: SQLite read/write by default) | Review ranked jobs, CRM, history | Safe |
-| `streamlit run dashboard/app.py --server.port 8502` | Same on custom port | Port conflict | Safe |
+| `./scripts/run_dashboard.sh` | Loads repo `.env`, then starts Streamlit (D8B: SQLite read/write by default) | **Canonical** production / Task 3 dashboard launch | Safe |
+| `./scripts/run_dashboard.sh --server.port 8502` | Same on custom port | Port conflict | Safe |
+| `streamlit run dashboard/app.py` | Starts dashboard **without** loading `.env` | Dev only — use `./scripts/run_dashboard.sh` for production | Safe |
 
 **Prerequisite:** `pip install -r requirements.txt` (includes editable install).
 
 ### Default path (D8B)
 
-No `SQLITE_*` exports required:
+No `SQLITE_*` exports required when using the canonical launcher:
 
 ```bash
-streamlit run dashboard/app.py
+./scripts/run_dashboard.sh
 ```
+
+**Listing visibility:** Job Listings show `open` and `closed` (all pipeline stages); `removed` hidden. Recommended Actions include only `listing_status=open`. Listing visibility is **always on** (TD10) — no `LISTING_STATUS_VISIBILITY_UI` flag.
+
+### Dashboard section order
+
+Rendered top-to-bottom in [`dashboard/app.py`](../dashboard/app.py) (after header KPIs and Job Search Progression / Source Distribution):
+
+1. **Operational Controls** — scheduler pause/resume and Refresh AI Evaluations trigger
+2. **Acquisition Health** — latest Scheduler A run KPIs + history
+3. **Operational Monitor Health** — latest Scheduler B run KPIs + history
+4. **AI Refresh Health** — latest manual re-score run KPIs + history
+5. **Recommended Actions** — four-queue Command Center
+6. **Job Listings** — sidebar-filtered table
+7. **Recruiter Relationship Management** + progression
+8. **Outreach Intelligence**
+
+<p align="center">
+  <img src="../diagrams/dashboard-operator-controls.png" alt="Operational Controls: Acquisition and Lifecycle Monitor cards with pause, resume, and run now" width="720" />
+</p>
+
+### Operational Controls
+
+[`dashboard/operator_controls_ui.py`](../dashboard/operator_controls_ui.py) — macOS launchd integration for acquisition and lifecycle schedulers; manual **Refresh AI Evaluations** subprocess trigger.
+
+| Card | Shows | Actions (write gate on) |
+|------|-------|-------------------------|
+| **Acquisition** | Scheduler status, idle/running, next scheduled run | Pause · Resume · Run now |
+| **Lifecycle Monitor** | Same + OHM re-enable ladder when gated | Pause · Resume · Run now · Record validation ladder passed · Approve lifecycle re-enable |
+| **Refresh AI Evaluations** | Running / not running; last completed run summary | Run now → preset dialog |
+
+**Write gate:** `SQLITE_DASHBOARD_WRITE=1` required for Pause/Resume/Run now and AI refresh. View-only mode shows cards but disables actions.
+
+**Soft pause vs plist:** Pause sets operator scheduler state in DB; Resume reinstalls LaunchAgent plists. Lifecycle Resume after OHM uses **17:00 IST once daily** cadence.
+
+**Refresh AI Evaluations dialog:** Preset radio (`backlog` / `discovery`); cohort preview caption shows **cohort matched**, **eligible (with description)**, and **estimated batches** — no scoring-cap language.
+
+Logs: `logs/scheduled/ai-refresh-YYYYMMDD-HHMMSS.log` when triggered from dashboard.
+
+### Acquisition Health
+
+[`dashboard/acquisition_ui.py`](../dashboard/acquisition_ui.py) — summary KPI row from latest completed `acquisition_runs` entry plus run history table (observations, query runs, duration).
+
+<p align="center">
+  <img src="../diagrams/dashboard-acquisition-health.png" alt="Acquisition Health KPIs and run history table" width="720" />
+</p>
+
+### Operational Monitor Health
+
+[`dashboard/monitor_ui.py`](../dashboard/monitor_ui.py) — summary KPI row from latest completed `lifecycle_monitor_runs` entry plus run history. Feeds header **Last Monitoring Refresh** caption.
+
+<p align="center">
+  <img src="../diagrams/dashboard-monitor-health.png" alt="Operational Monitor Health KPIs and run history table" width="720" />
+</p>
+
+### AI Refresh Health
+
+[`dashboard/ai_refresh_ui.py`](../dashboard/ai_refresh_ui.py) — metrics from latest completed `ai_refresh_runs` row.
+
+**KPI layout (two rows):**
+
+| Row | Metrics |
+|-----|---------|
+| 1 | AI Refresh Health (Healthy/Degraded) · Last Preset |
+| 2 | Jobs Scored · Last Run Duration · Last Run Cohort · Last Run Eligible · Batch Failures |
+
+**History columns:** Run · Preset · Started · Completed · Duration · Cohort · Eligible · Scored · Persist Skipped · No Description · Status
+
+Does **not** display cap-skipped metrics (legacy audit fields may exist in DB only).
+
+<p align="center">
+  <img src="../diagrams/dashboard-ai-refresh-health.png" alt="AI Refresh Health two-row KPIs and run history table" width="720" />
+</p>
+
+<p align="center">
+  <img src="../diagrams/dashboard-ai-refresh-popup.png" alt="Run Refresh AI Evaluations dialog with preset picker and cohort preview" width="720" />
+</p>
+
+### Lifecycle listing write guards
+
+Scheduler B writes via `validate_scheduler_b_transition()` in [`src/db/services/lifecycle_write.py`](../src/db/services/lifecycle_write.py):
+
+- Writable targets: `open`, `closed`, `removed`, `check_failed` only — scheduler **cannot** write `monitor_exempt`
+- Terminal states (`closed`, `removed`) block reopen transitions
+- `monitor_exempt` is set by dashboard CRM transitions and LinkedIn Applied auto-promotion — see PRODUCT_STATUS_SUMMARY.md
 
 | Concern | Default source |
 |---------|----------------|
@@ -359,7 +449,7 @@ Implemented in [`dashboard/data_flow.py`](../dashboard/data_flow.py). Sidebar fi
 
 | Frame | Definition | Filters |
 |-------|------------|---------|
-| `dashboard_df` | `historical_jobs_view` after display prep + `apply_activity_visibility()` | **System only** — active jobs OR user-managed pipeline stages |
+| `dashboard_df` | `historical_jobs_view` after display prep + `apply_listing_visibility()` | **System only** — `listing_status` visibility + user-managed pipeline stages |
 | `filtered_df` | `dashboard_df` after sidebar filters + table sort | **Sidebar only** — date, location, source, status, min score, recruiter contact |
 
 | UI section | Data source | Sidebar-filtered? |
@@ -367,6 +457,10 @@ Implemented in [`dashboard/data_flow.py`](../dashboard/data_flow.py). Sidebar fi
 | Header “Total Jobs” | `len(dashboard_df)` | No |
 | “Latest Acquisition” | `current_jobs_view` row count | No |
 | “Last acquisition refresh” | `latest_acquisition_run_view` | No |
+| **Operational Controls** | `operator_controls_ui.py` | No |
+| **Acquisition Health** | `acquisition_runs` via `acquisition_ui.py` | No |
+| **Operational Monitor Health** | `lifecycle_monitor_runs` via `monitor_ui.py` | No |
+| **AI Refresh Health** | `ai_refresh_runs` via `ai_refresh_ui.py` | No |
 | **Recommended Actions** (four queues) | `dashboard_df` via `recommended_actions.py` | **No** |
 | **Job Search Progression** (Discovery / Application / Outcomes) | `dashboard_df` | **No** |
 | Source Distribution chart | `dashboard_df` | No |
@@ -375,8 +469,92 @@ Implemented in [`dashboard/data_flow.py`](../dashboard/data_flow.py). Sidebar fi
 | **Recruiter Relationship Manager** | `recruiter_crm_df` from `active_recruiters_view` | **No** (full CRM cohort) |
 | CRM **Total Recruiters** KPI | `len(recruiter_crm_df)` | No |
 | **Recruiter Relationship Progression** | `recruiter_stage` counts via `recruiter_funnel.py` | No |
+| **Outreach Intelligence V1** | `outreach_df` from `outreach_attempts` table | **No** (full outreach cohort; sidebar-independent) |
 
-**Recruiter CRM metrics** use `recruiter_stage` workflow stages (`discovered` → `warm` → `active` → `responded`; outcomes: `ghosted`, `archived`). They do **not** use `currently_active` (acquisition sighting flag). Status edits persist via `persist_dashboard_crm_edits` → `recruiters.recruiter_stage`.
+**Recruiter CRM metrics** use `recruiter_stage` workflow stages (`discovered` → `warm` → `active` → `responded`; outcomes: `ghosted`, `archived`). Job listing availability uses `listing_status`, not recruiter `currently_active`. Status edits persist via `persist_dashboard_crm_edits` → `recruiters.recruiter_stage`.
+
+### Outreach Intelligence V1
+
+Opportunity-centric outreach attempt log — not a CRM, not a contact database. Inline ⓘ help tooltip (same pattern as Job Listings). Rendered below Recruiter Relationship Management in [`dashboard/outreach_ui.py`](../dashboard/outreach_ui.py).
+
+| Concern | Behavior |
+|---------|----------|
+| Data source | `outreach_attempts` via `load_outreach_df()` (SQLite only; no CSV fallback) |
+| Read gate | `SQLITE_ENABLED=1` and `SQLITE_READ=1` (`dashboard_read_enabled()`) — required to load records |
+| Write gate | `SQLITE_DASHBOARD_WRITE=1` (`dashboard_write_enabled()`) — required for add/edit |
+| Read-only mode | When `SQLITE_READ=1` but `SQLITE_DASHBOARD_WRITE=0`: KPIs, filters, and table visible; add/edit disabled |
+| No SQLite read | When `SQLITE_READ=0`: section empty (same as other SQLite-backed dashboard panels) |
+| Cohort | Independent of sidebar filters (like CRM and Recommended Actions) |
+| Creation | Manual + job-linked creation via Add Outreach form (optional Link to job from Job Listings / `dashboard_editor_df`) |
+| Not in V1 | CRM row actions, recruiter-originated creation, HM-originated creation, person-first workflows, auto-create on Applied |
+
+**Status set:** Planned · Sent · Replied · Meeting Scheduled · **Referral Offered** (distinct from generic Replied — meaningful referral path outcome) · No Response · Closed.
+
+**KPIs:** Total Outreach Records · Active Outreach (`sent`, `replied`, `meeting_scheduled`, `referral_offered`) · Follow-Ups Due Today · Overdue Follow-Ups.
+
+**Filters:** outreach status multiselect; hiring signal multiselect (9 types + Not set for legacy rows); follow-up filter (All / Due today / Overdue / No follow-up set).
+
+**No write-back** to `recruiters`, `user_job_state`, or job pipeline stages. Legacy `recruiters.outreach_*` columns remain DB-only and unused by this module.
+
+**Upgrade:** run `alembic upgrade head` once after pull (head: `014_drop_currently_active`).
+
+Persistence: [`src/db/services/outreach_write.py`](../src/db/services/outreach_write.py).
+
+#### Outreach Intelligence V1.1 — Hiring Signal Capture
+
+Lightweight metadata on each outreach attempt — answers *why* contact happened. Not CRM, not analytics, not automation.
+
+| Field | Rule |
+|-------|------|
+| `hiring_signal_type` | Required on **new** outreach creates; nullable in DB for legacy rows; editable in table for backfill |
+| `hiring_signal_url` | Optional free text (link to post, message, referral context) |
+
+**Hiring signal types (9):** `linkedin_hiring_post` · `founder_post` · `recruiter_message` · `whatsapp_referral` · `personal_referral` · `mentor_referral` (distinct from personal referral) · `direct_outreach` · `job_listing` (Job Outreach path; V1.3) · `other`
+
+Legacy rows with null `hiring_signal_type` display as **Not set** and remain valid. No new KPIs or signal analytics.
+
+#### Outreach Intelligence V1.2 — Hiring Signal Ingestion (Phase 3D.2)
+
+LinkedIn-only hiring signal URL ingestion in **Add Outreach** ([`dashboard/outreach_ui.py`](../dashboard/outreach_ui.py)). Outreach Intelligence domain code lives under [`src/outreach/`](../src/outreach/) (not `scraper/`).
+
+| Step | Behavior |
+|------|----------|
+| 1 | Paste a LinkedIn **post** URL into **Hiring Signal URL** (field-level ⓘ help describes Fetch Details behavior) |
+| 2 | Click **Fetch Details** (not part of Save submit) |
+| 3 | Playwright loads the post (and optionally the author `/in/` profile in the same session) using `data/linkedin_auth.json` |
+| 4 | One OpenAI call (`gpt-4o-mini`) structures a draft prefill |
+| 5 | Operator reviews/edits all fields, then **Save outreach** |
+
+**Supported URL patterns:** `linkedin.com/posts/...` · `linkedin.com/feed/update/urn:li:activity:...` (and `share` / `ugcPost` URNs). Non-LinkedIn URLs are rejected at ingest with *Ingestion supports LinkedIn posts only.* (manual store-only entry in the form still allowed).
+
+**Prefilled fields (editable before save):** `hiring_signal_type` (AI suggestion), `person_name`, `company`, `designation`, `linkedin_url` (profile URL when enriched), `hiring_signal_url`, `notes` (**Hiring Signal Notes** — structured bullets plus Application Contact / Application Instructions when present). Job link fields are **not** prefilled from URL ingest; Fetch Details overwrites **empty** scalar fields only and does not clear an already selected job link.
+
+**Profile enrichment:** when the post author has a valid LinkedIn `/in/` profile URL, [`src/outreach/linkedin_post_fetch.py`](../src/outreach/linkedin_post_fetch.py) visits the profile in the same Playwright session and enriches empty `person_name`, `designation`, and `company` from profile metadata ([`src/outreach/linkedin_profile_fetch.py`](../src/outreach/linkedin_profile_fetch.py) parsers only). Profile failure is non-fatal (warning toast; post-only draft).
+
+**Application emails:** regex detection from post text plus AI extraction; stored in Hiring Signal Notes as markdown `mailto:` links (no new DB column).
+
+**Auth prerequisite:** refresh session with `save_linkedin_session()` from [`scraper/linkedin.py`](../scraper/linkedin.py) when fetch reports missing/expired auth.
+
+**Failure modes:** invalid URL · missing auth · Playwright timeout/login wall on post · empty post DOM · profile enrichment unavailable (warning only) · OpenAI/JSON error (DOM fallback in notes with warning toast). No auto-save on partial failure.
+
+**Debug:** `DEBUG_HIRING_SIGNAL_INGEST=true` logs OpenAI prompt/response (parallel to `DEBUG_AI`).
+
+**Do not run Fetch during scheduled acquisition** — concurrent Playwright sessions may conflict.
+
+#### Outreach Intelligence V1.3 — Job Outreach Split (Phase 3D.3)
+
+Second path in **Add Outreach** alongside Hiring Signal Outreach (feature-frozen). Select **Outreach Type** → **Job Outreach** in the expander ([`dashboard/outreach_ui.py`](../dashboard/outreach_ui.py)).
+
+| Concern | Behavior |
+|---------|----------|
+| Data source | SQLite only — job row, description, and recruiter/HM from DB ([`src/db/read/job_outreach.py`](../src/db/read/job_outreach.py)) |
+| Playwright | **None** — DB-driven prefill only |
+| Prefill | [`src/agent/job_outreach_prefill.py`](../src/agent/job_outreach_prefill.py) builds AI message from job context |
+| Persistence | `outreach_type` column on `outreach_attempts` (`job_outreach` vs hiring-signal path); `hiring_signal_type` set to `job_listing` on save |
+| Duplicate guard | Blocks duplicate `opportunity_id` (`job_key_v2`) for Job Outreach creates |
+| Job URL | Read-only display after Fetch Details when linked |
+
+**Hiring Signal Outreach** (V1.2 ingestion path) is unchanged when that radio option is selected.
 
 **Activity visibility:** inactive `New` jobs hidden; inactive jobs in user-managed stages (`Applied` and beyond, plus `Saved`) remain visible (CRM memory).
 
@@ -394,10 +572,10 @@ Job-centric rule engine in [`dashboard/recommended_actions.py`](../dashboard/rec
 
 | Order | Queue | Rules |
 |-------|-------|-------|
-| 1 | **Needs Review** | Base cohort AND `first_seen` ≥ 14 days ago (no `currently_active` or `reason` requirement) |
-| 2 | **High Confidence** | Base cohort AND days 0–13 AND score ≥ 9 AND `currently_active` AND non-empty `reason` |
-| 3 | **Apply Today** | Base cohort AND days 0–3 AND score 8 (score &lt; 9) AND `currently_active` AND non-empty `reason` |
-| 4 | **Apply This Week** | Base cohort AND days 4–13 AND score 8 (score &lt; 9) AND `currently_active` AND non-empty `reason` |
+| 1 | **Needs Review** | Base cohort AND `first_seen` ≥ 14 days ago (no `reason` requirement) |
+| 2 | **High Confidence** | Base cohort AND days 0–13 AND score ≥ 9 AND `listing_status=open` AND non-empty `reason` |
+| 3 | **Apply Today** | Base cohort AND days 0–3 AND score 8 (score &lt; 9) AND `listing_status=open` AND non-empty `reason` |
+| 4 | **Apply This Week** | Base cohort AND days 4–13 AND score 8 (score &lt; 9) AND `listing_status=open` AND non-empty `reason` |
 
 Thresholds and labels: [`dashboard/recommended_actions_config.py`](../dashboard/recommended_actions_config.py) (`HIGH_SCORE_MIN=8`, `HIGH_CONFIDENCE_MIN=9`, `APPLY_TODAY_MAX_DAYS=3`, `APPLY_WEEK_MIN_DAYS=4`, `APPLY_WEEK_MAX_DAYS=13`, `NEEDS_REVIEW_MIN_DAYS=14`).
 
@@ -442,6 +620,8 @@ Job-bound recruiter capture from the **Job Listings** table — not a standalone
 
 **Normalization:** empty / `not specified` / `unknown` → `Not Specified`; skips recruiter upsert and link creation; existing links preserved.
 
+**Acquisition overwrite protection (Task D):** runtime dual-write preserves a real `jobs.hiring_manager` when a re-scrape returns sentinel values (`Not Specified`, `Unknown`, blank). See [SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md §6A](./SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md) and `tests.test_dual_write_hiring_manager_merge`.
+
 **Requires:** `dashboard_write_enabled()` (`SQLITE_ENABLED` + `SQLITE_READ` + `SQLITE_DASHBOARD_WRITE`). When writes are off, HM edits are not persisted (CSV fallback path does not include `hiring_manager`).
 
 **Deferred (not in 3B HM enrichment):** standalone recruiter capture, job URL lookup, stub jobs, relationship action queues, deleting historical links on HM change.
@@ -451,6 +631,114 @@ Job-bound recruiter capture from the **Job Listings** table — not a standalone
 ```bash
 python -m unittest tests.test_recruiter_enrichment tests.test_dashboard_job_hiring_manager -v
 ```
+
+### LinkedIn hiring manager operator tooling (Tasks B–E)
+
+Canonical operator reference for LinkedIn `hiring_manager` data quality. **Backup before any apply.** Run outside scheduled acquisition windows or confirm `/tmp/ai-job-agent-acquisition.lock` is free.
+
+| Task | Script | Cohort | Writes |
+|------|--------|--------|--------|
+| **B — Extract validation** | [`scripts/probe_linkedin_hiring_manager.py`](../scripts/probe_linkedin_hiring_manager.py) | Live probe samples (HM-missing / HM-success) | None |
+| **C — Backfill (no link)** | [`scripts/backfill_linkedin_hiring_managers.py`](../scripts/backfill_linkedin_hiring_managers.py) | Sentinel HM, no `recruiter_job_links`, valid LinkedIn job URL | `jobs.hiring_manager` via manifest apply |
+| **D — Forward protection** | (runtime) [`dual_write._upsert_jobs`](../src/db/services/dual_write.py) | Acquisition re-scrape | Sentinel incoming cannot clobber real HM |
+| **E — Overwrite repair (link exists)** | [`scripts/repair_linkedin_hm_overwrite_cohort.py`](../scripts/repair_linkedin_hm_overwrite_cohort.py) | Sentinel HM + exactly one link + valid recruiter name | `jobs.hiring_manager` only |
+
+**Task B — probe (live Playwright):**
+
+```bash
+python scripts/probe_linkedin_hiring_manager.py --mode hm-missing --limit 5
+python scripts/probe_linkedin_hiring_manager.py --mode hm-success --limit 5
+python scripts/probe_linkedin_hiring_manager.py --job-key-v2 v2:linkedin:JOB_ID
+```
+
+Extraction uses primary BEM selector then **flagship3 poster-section fallback** ([`scraper/linkedin.py`](../scraper/linkedin.py) `_li_extract_hiring_manager_from_page`). Unit tests: `tests.test_linkedin_hiring_manager_extract`.
+
+**Task C — backfill manifest workflow:**
+
+```bash
+# Extract (Playwright) → recoverable manifest; no DB writes
+python scripts/backfill_linkedin_hiring_managers.py --limit 50 --manifest-out data/manifests/linkedin_hm_recoverable.json
+
+# Apply from manifest (no re-scrape)
+python scripts/backfill_linkedin_hiring_managers.py --apply-from-manifest data/manifests/linkedin_hm_recoverable.json --limit 5
+python scripts/backfill_linkedin_hiring_managers.py --apply-from-manifest data/manifests/linkedin_hm_recoverable.json
+```
+
+Apply guards: sentinel HM only; **no** existing `recruiter_job_links`. Unit tests: `tests.test_backfill_linkedin_hiring_managers`.
+
+**Task D — overwrite protection:** no operator script; active on every acquisition dual-write when `SQLITE_DUAL_WRITE=1`. Unit tests: `tests.test_dual_write_hiring_manager_merge`.
+
+### LinkedIn HM overwrite cohort repair (Task E)
+
+Repairs historical damage: `jobs.hiring_manager` sentinel but valid `recruiters.recruiter_name` via exactly one `recruiter_job_links` row. Writes **`jobs.hiring_manager` only** (no link/recruiter changes). Complements Task C backfill (no-link cohort) and Task D forward protection.
+
+**Operator sequence:**
+
+```bash
+export DB="${AI_JOB_AGENT_DB_PATH:-data/ai_job_agent.db}"
+
+# 1. Backup (mandatory before apply)
+STAMP=$(date -u +%Y%m%d-%H%M%S)
+mkdir -p data/backups
+cp "$DB" "data/backups/ai_job_agent-pre-task-e-${STAMP}.db"
+
+# 2. Pre-apply validation (expect repair_cohort_count = 33)
+sqlite3 "$DB" "SELECT COUNT(*) AS repair_cohort_count FROM (
+  SELECT j.id FROM jobs j
+  INNER JOIN recruiter_job_links rjl ON rjl.job_id = j.id
+  INNER JOIN recruiters r ON r.id = rjl.recruiter_id
+  WHERE j.source = 'linkedin'
+    AND (j.hiring_manager IS NULL OR TRIM(j.hiring_manager) = ''
+         OR LOWER(TRIM(j.hiring_manager)) IN ('not specified', 'unknown', 'nan', 'none'))
+    AND LOWER(TRIM(r.recruiter_name)) NOT IN ('not specified', 'unknown', 'nan', 'none')
+    AND TRIM(r.recruiter_name) != ''
+    AND j.id IN (SELECT job_id FROM recruiter_job_links GROUP BY job_id HAVING COUNT(*) = 1)
+) AS repair_cohort;"
+
+# 3. Dry-run manifest (no DB writes)
+python scripts/repair_linkedin_hm_overwrite_cohort.py --expect-count 33
+
+# 4. Staged apply
+python scripts/repair_linkedin_hm_overwrite_cohort.py \
+  --apply-from-manifest data/manifests/repair_hm_overwrite-<timestamp>.json --limit 1
+python scripts/repair_linkedin_hm_overwrite_cohort.py \
+  --apply-from-manifest data/manifests/repair_hm_overwrite-<timestamp>.json --limit 5
+python scripts/repair_linkedin_hm_overwrite_cohort.py \
+  --apply-from-manifest data/manifests/repair_hm_overwrite-<timestamp>.json
+
+# 5. Post-apply validation (overwrite_cohort_count should be 0; links unchanged)
+sqlite3 "$DB" "SELECT COUNT(*) FROM jobs j WHERE j.source='linkedin'
+  AND (j.hiring_manager IS NULL OR TRIM(j.hiring_manager)=''
+       OR LOWER(TRIM(j.hiring_manager)) IN ('not specified','unknown','nan','none'))
+  AND EXISTS (SELECT 1 FROM recruiter_job_links rjl WHERE rjl.job_id=j.id);"
+sqlite3 "$DB" "SELECT COUNT(*) FROM recruiter_job_links;"
+
+# 6. Unit tests
+python -m unittest tests.test_repair_linkedin_hm_overwrite_cohort tests.test_dual_write_hiring_manager_merge -v
+```
+
+**Rollback:** `cp data/backups/ai_job_agent-pre-task-e-<STAMP>.db "$DB"`
+
+### Posted date operator tooling
+
+Runtime acquisition derives ISO `posted_at_date` and `age_days` from relative `time_posted` ([`src/agent/posted_date_derive.py`](../src/agent/posted_date_derive.py), wired in `main.py` and dual-write). Dual-write preserves existing `posted_at_date` / `age_days` on conflict (`COALESCE`). **Dashboard Posted column still uses `last_seen` fallback** — display phase is future.
+
+| Script | Use when | Playwright |
+|--------|----------|------------|
+| [`scripts/backfill_posted_at_date.py`](../scripts/backfill_posted_at_date.py) | Derive from existing `time_posted` using `last_seen` as anchor | No |
+| [`scripts/backfill_linkedin_posted_dates.py`](../scripts/backfill_linkedin_posted_dates.py) | Re-scrape `time_posted=Unknown` LinkedIn jobs | Yes |
+
+```bash
+# Anchor backfill (dry-run default)
+python scripts/backfill_posted_at_date.py
+python scripts/backfill_posted_at_date.py --apply
+
+# Playwright re-scrape backfill → manifest → apply
+python scripts/backfill_linkedin_posted_dates.py --limit 50
+python scripts/backfill_linkedin_posted_dates.py --apply-from-manifest PATH
+```
+
+Unit tests: `tests.test_posted_date_derive`, `tests.test_backfill_linkedin_posted_dates`, `tests.test_linkedin_time_posted_extract`.
 
 ### Dashboard verification (unit tests)
 
@@ -592,19 +880,44 @@ Set `DEBUG_IDENTITY=true` on a pipeline run for per-job description reuse logs (
 
 | Script | Command | What it does | When to use | Safety |
 |--------|---------|--------------|-------------|--------|
-| Scheduled acquisition | `./scripts/scheduling/run_scheduled_acquisition.sh` | `with_file_lock.py` → `main.py` → production parity | 10:00 / 21:00 IST via LaunchAgent or manual test | Safe |
+| Scheduled acquisition | `./scripts/scheduling/run_scheduled_acquisition.sh` | `with_file_lock.py` → `main.py` → production parity | 09:00 / 21:00 IST via LaunchAgent or manual test | Safe |
+| Scheduled lifecycle monitor | `./scripts/scheduling/run_scheduled_lifecycle_monitor.sh` | acquisition-lock probe → monitor `--apply` → TD9 parity | **17:00 IST once daily** via LaunchAgent or manual test | Writes `listing_*` |
 | Scheduled backup | `./scripts/scheduling/run_scheduled_backup.sh` | Archive + CSV export + SOT parity | Sunday 23:00 optional LaunchAgent | Safe (writes archive) |
-| Install LaunchAgents | `./scripts/scheduling/install_launchagents.sh` | Renders plists → `~/Library/LaunchAgents`, `launchctl bootstrap` | One-time setup | Safe |
+| Install LaunchAgents | `./scripts/scheduling/install_launchagents.sh` | Acquisition + lifecycle plists → `~/Library/LaunchAgents` | Task 3 activation | Safe |
 | Install + backup | `./scripts/scheduling/install_launchagents.sh --with-backup` | Same + weekly backup agent | Optional | Safe |
+| Uninstall LaunchAgents | `./scripts/scheduling/uninstall_launchagents.sh` | `launchctl bootout` + remove plists | Task 3 rollback | Safe |
 
-Manual test acquisition:
+Manual test:
 
 ```bash
 ./scripts/scheduling/run_scheduled_acquisition.sh
+./scripts/scheduling/run_scheduled_lifecycle_monitor.sh
 launchctl kickstart -k "gui/$(id -u)/com.vasundhara-bisht.ai-job-agent.acquisition"
+launchctl kickstart -k "gui/$(id -u)/com.vasundhara-bisht.ai-job-agent.lifecycle-monitor"
 ```
 
-Lock helper: `scripts/scheduling/with_file_lock.py`. Lock files: `/tmp/ai-job-agent-acquisition.lock`, `/tmp/ai-job-agent-backup.lock`. Scheduled wrapper sets `LINKEDIN_MAX_RUNS=3` before `main.py`. Full install: [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md).
+Lock helper: `scripts/scheduling/with_file_lock.py`. Lock files: `/tmp/ai-job-agent-acquisition.lock`, `/tmp/ai-job-agent-lifecycle-monitor.lock`, `/tmp/ai-job-agent-backup.lock`, `/tmp/ai-job-agent-ai-refresh.lock`. Scheduled acquisition sets `LINKEDIN_MAX_RUNS=3` before `main.py`. Full install: [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md). Task 3 validation: SCHEDULER_SETUP.md.
+
+### AI refresh (`scripts/run_ai_refresh.py`)
+
+Re-runs the **existing** batch AI scoring path against SQLite-backed job cohorts — **no scrape, no description fetch**. Uses stored descriptions from `job_descriptions` and appends new `ai_evaluations` rows (latest view picks newest `evaluated_at`). Run records go to `ai_refresh_runs` (separate from `acquisition_runs`).
+
+| Script | Command | What it does | When to use | Safety |
+|--------|---------|--------------|-------------|--------|
+| AI refresh (dry-run) | `python scripts/run_ai_refresh.py --preset backlog --dry-run` | Cohort counts + sample job keys; no OpenAI, no writes | Preview cost/cohort before run | Safe |
+| AI refresh (backlog) | `python scripts/run_ai_refresh.py --preset backlog` | Score discovery-stage backlog (`pending`, `skipped_by_cap`, incomplete `scored`) | Drain unscored / cap-skipped jobs after profile tweak | **OpenAI cost**; defers if acquisition lock held |
+| AI refresh (discovery) | `python scripts/run_ai_refresh.py --preset discovery` | Re-score open `New` jobs with persistable descriptions (includes healthy `scored`) | After profile update — refresh fit on active discovery cohort | **OpenAI cost** |
+
+**Dashboard trigger (v1):** Operator Controls → **Refresh AI Evaluations** card → preset picker + cohort preview → **Run now** (`subprocess`; requires `SQLITE_DASHBOARD_WRITE=1`). Health section: **AI Refresh Health** (after Operational Monitor Health). See [§8 AI Refresh Health](#ai-refresh-health).
+
+**Presets:**
+
+| Key | Label | Cohort rule (summary) |
+|-----|-------|------------------------|
+| `backlog` | Refresh Scoring Backlog | `New`/`Saved`; `pending` / `skipped_by_cap` / incomplete `scored`; any `listing_status`; requires persistable description at score time |
+| `discovery` | Refresh Evaluations | `New` + `listing_status=open`; includes `scored` for profile refresh |
+
+**Requirements:** `OPENAI_API_KEY` (same as acquisition). Reuses `BATCH_SIZE` (default 20), `OPENAI_MODEL`, `AI_CANDIDATE_PROFILE_PATH`. File lock: `/tmp/ai-job-agent-ai-refresh.lock` (removed on successful exit); skips (exit 0) when acquisition lock is held. Logs: `logs/scheduled/ai-refresh-YYYYMMDD-HHMMSS.log` (CLI and dashboard via `AI_REFRESH_LOG_FILE`). `scored_count` in `ai_refresh_runs` is the **persisted** evaluation count; `persist_skipped_count` records scored jobs that were not written. **Not launchd-scheduled in v1** — manual or dashboard only. See [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md) §5.
 
 ---
 
@@ -618,10 +931,9 @@ Lock helper: `scripts/scheduling/with_file_lock.py`. Lock files: `/tmp/ai-job-ag
 ### Default path (D8B) — no env exports
 
 ```bash
-export OPENAI_API_KEY="..."
 python main.py
 python scripts/validate_sqlite_parity.py --mode production --fail-on-error
-streamlit run dashboard/app.py
+./scripts/run_dashboard.sh
 ```
 
 Confirm terminal: `Pipeline historical index: SQLite`, `SQLite write-primary: CSV persistence gated`, `SQLITE DUAL-WRITE SUMMARY` with `enabled=1` / `success=1`.
@@ -637,7 +949,7 @@ Confirm terminal: `Pipeline historical index: SQLite`, `SQLite write-primary: CS
 After each acquisition run:
 
 1. `python scripts/validate_sqlite_parity.py --mode production --fail-on-error`
-2. Review dashboard (`streamlit run dashboard/app.py`)
+2. Review dashboard (`./scripts/run_dashboard.sh`)
 3. Weekly or before backup/SOT check: `python scripts/export_csv_memory.py --all` then `python scripts/validate_sqlite_parity.py --mode source-of-truth --fail-on-error`
 
 With write-primary, empty historical/CRM CSV mirrors are **normal** after step 1 (production mode). Step 3 validates exported backups against SQLite.
@@ -696,15 +1008,30 @@ Dual-write runs only when **both** `SQLITE_ENABLED=1` and `SQLITE_DUAL_WRITE=1`.
 | Dashboard data-flow tests | `python -m unittest tests.test_dashboard_data_flow tests.test_dashboard_visibility -q` | `dashboard_df` vs `filtered_df` isolation | Safe |
 | Job Search Progression tests | `python -m unittest tests.test_dashboard_funnel tests.test_dashboard_funnel_workflow -q` | Funnel counts + workflow HTML | Safe |
 | Recommended Actions tests (Phase 3A / 3A.1 / 3A.2) | `python -m unittest tests.test_recommended_actions tests.test_recommended_actions_applied tests.test_display_text tests.test_source_display tests.test_dashboard_data_flow -q` | Four-queue waterfall, day 8–13 coverage, display caps, dynamic panel height (`QueuePanelHeightTests`), Applied quick action, Why? popover helpers, source display labels, cohort isolation | Safe |
+| Outreach Intelligence V1 tests | `python -m unittest discover -s tests -p 'test_outreach*.py' -q` | Status/metrics/prefill, persistence, loaders, migration, UI helpers | Safe |
+| Hiring signal ingestion (3D.2) tests | `python -m unittest discover -s tests -p 'test_linkedin_post*.py' -q` and `python -m unittest tests.test_contact_extract tests.test_hiring_signal_extract tests.test_linkedin_profile_fetch tests.test_outreach_signal_prefill -q` | URL validation, email extract, HTML fixtures, profile parse, mocked OpenAI, prefill merge | Safe |
 | HM enrichment tests (Phase 3B) | `python -m unittest tests.test_recruiter_enrichment tests.test_dashboard_job_hiring_manager -q` | Append-only links, persist + dirty detection | Safe |
 | Recruiter Relationship Progression tests | `python -m unittest tests.test_dashboard_recruiter_funnel tests.test_dashboard_recruiter_workflow -q` | CRM stage counts + workflow HTML | Safe |
-| Instahyre Interested sync tests | `python -m unittest tests.test_instahyre_interested_sync -q` | Interested sync persist + cohort isolation | Safe |
+| Instahyre Interested sync tests | `python -m unittest tests.test_instahyre_interested_sync tests.test_instahyre_interested_enrichment -q` | Interested sync persist + enrichment | Safe |
 | User-managed routing tests | `python -m unittest tests.test_pipeline_user_managed_routing -q` | `not_required` + fully_processed short-circuit | Safe |
 | Validation mode tests | `python -m unittest tests.test_validation_modes -q` | Parity mode behavior | Safe |
 | D7 reset/export tests | `python -m unittest tests.test_reset_sqlite -q` | SQLite truncate profiles + SOT parity detection | Safe |
 | CSV memory export | `SQLITE_ENABLED=1 python scripts/export_csv_memory.py --all` | Export all CSV/JSON mirrors from DB | Safe |
 | SOT parity validator | `python scripts/validate_sqlite_parity.py --mode source-of-truth --fail-on-error` | DB reference vs on-disk CSV exports | Safe |
 | Metadata backfill (dry-run) | `python scripts/backfill_observation_query_runs.py --dry-run` | Preview `query_run_id` repair for latest run | Safe |
+| Posted date backfill (anchor) | `python scripts/backfill_posted_at_date.py` | Derive `posted_at_date` from `time_posted` + `last_seen` anchor | Safe |
+| Posted date backfill (apply) | `python scripts/backfill_posted_at_date.py --apply` | Commit anchor-derived posted dates | **Destructive** (jobs table; backup first) |
+| LinkedIn posted date re-scrape | `python scripts/backfill_linkedin_posted_dates.py --limit N` | Playwright re-extract `time_posted` for Unknown cohort | Safe (manifest) |
+| LinkedIn HM probe (Task B) | `python scripts/probe_linkedin_hiring_manager.py --mode hm-missing --limit 5` | Live HM extraction validation | Safe (read-only DB sample) |
+| LinkedIn HM backfill extract (Task C) | `python scripts/backfill_linkedin_hiring_managers.py --limit N` | Playwright extract → recoverable manifest | Safe |
+| LinkedIn HM backfill apply (Task C) | `python scripts/backfill_linkedin_hiring_managers.py --apply-from-manifest PATH` | Apply manifest to sentinel HM rows without links | **Destructive** (jobs table; backup first) |
+| LinkedIn HM overwrite repair (dry-run) | `python scripts/repair_linkedin_hm_overwrite_cohort.py --expect-count 33` | Manifest for 33-job sentinel+link cohort; no DB writes | Safe |
+| LinkedIn HM overwrite repair (apply) | `python scripts/repair_linkedin_hm_overwrite_cohort.py --apply-from-manifest PATH` | Restore `jobs.hiring_manager` from linked recruiter | **Destructive** (jobs table only; backup first) |
+| HM merge protection tests (Task D) | `python -m unittest tests.test_dual_write_hiring_manager_merge -q` | Sentinel merge on dual-write upsert | Safe |
+| LinkedIn HM extract tests (Task B) | `python -m unittest tests.test_linkedin_hiring_manager_extract -q` | Primary + flagship3 fallback fixtures | Safe |
+| LinkedIn HM backfill tests (Task C) | `python -m unittest tests.test_backfill_linkedin_hiring_managers -q` | Manifest + apply guards | Safe |
+| LinkedIn HM repair tests (Task E) | `python -m unittest tests.test_repair_linkedin_hm_overwrite_cohort -q` | Overwrite cohort repair guards | Safe |
+| Posted date / derive tests | `python -m unittest tests.test_posted_date_derive tests.test_backfill_linkedin_posted_dates -q` | Derive, backfill | Safe |
 
 **Note:** Importer is **non-destructive** — it upserts CSV keys but does not delete DB rows for keys removed from CSV. Orphans can cause import-mode aggregate failures until cleaned (see workflows below).
 
@@ -841,14 +1168,14 @@ playwright install chromium
 export OPENAI_API_KEY="..."
 ```
 
-Then create auth files via scraper login flows → run `python main.py` → `streamlit run dashboard/app.py`.
+Then create auth files via scraper login flows → run `python main.py` → `./scripts/run_dashboard.sh`.
 
 ### B. Daily refresh
 
-**Scheduled (production):** LaunchAgents at 10:00 and 21:00 IST run `run_scheduled_acquisition.sh` (acquisition + parity). Review when convenient:
+**Scheduled (production):** LaunchAgents at **09:00** and **21:00** IST run acquisition; **17:00 IST once daily** runs lifecycle monitor. Review when convenient:
 
 ```bash
-streamlit run dashboard/app.py
+./scripts/run_dashboard.sh
 ```
 
 Install and logs: [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md).
@@ -860,10 +1187,10 @@ source venv/bin/activate
 export OPENAI_API_KEY="..."
 python main.py
 python scripts/validate_sqlite_parity.py --mode production --fail-on-error
-streamlit run dashboard/app.py
+./scripts/run_dashboard.sh
 ```
 
-Profile edits: [`config/profiles/ai_candidate_profile.example.md`](../config/profiles/ai_candidate_profile.example.md) before run. Full cadence: [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md) §3.
+Profile edits: [`config/profiles/ai_candidate_profile.example.md`](../config/profiles/ai_candidate_profile.example.md) before run. For **re-scoring without re-scraping**, use **Refresh AI Evaluations** (dashboard Operator Controls or `python scripts/run_ai_refresh.py --preset discovery`). Full cadence: [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md) §3.
 
 ### C. Cheap validation run (minimal scrape)
 

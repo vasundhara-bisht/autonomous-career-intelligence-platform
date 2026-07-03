@@ -83,7 +83,6 @@ def _seed_minimal_db(db_path: Path) -> None:
                 job_id=job.id,
                 run_id=run_id,
                 observed_at=now,
-                currently_active=True,
                 times_seen=1,
             )
         )
@@ -155,6 +154,45 @@ class DashboardTransformTests(unittest.TestCase):
         out = apply_dashboard_job_ai_columns(df)
         self.assertTrue(bool(out.iloc[0]["is_ai_scored"]))
         self.assertEqual(float(out.iloc[0]["score"]), 8.5)
+
+
+class HistoricalDisplayColumnsTests(unittest.TestCase):
+    def test_does_not_backfill_time_posted_from_last_seen(self) -> None:
+        from dashboard.loaders import apply_historical_display_columns
+
+        raw = pd.DataFrame(
+            [
+                {
+                    "JOB_KEY": "k1",
+                    "last_seen": "2026-06-17 10:00:00",
+                    "posted_at_date": None,
+                    "ai_status": "scored",
+                    "ai_score": 7.0,
+                    "reason": "",
+                }
+            ]
+        )
+        out = apply_historical_display_columns(raw)
+        self.assertNotIn("time_posted", out.columns)
+        self.assertTrue(pd.isna(out.iloc[0]["posted_at_date"]))
+
+    def test_preserves_posted_at_date(self) -> None:
+        from dashboard.loaders import apply_historical_display_columns
+
+        raw = pd.DataFrame(
+            [
+                {
+                    "JOB_KEY": "k1",
+                    "last_seen": "2026-06-17 10:00:00",
+                    "posted_at_date": "2026-06-11",
+                    "ai_status": "scored",
+                    "ai_score": 7.0,
+                    "reason": "",
+                }
+            ]
+        )
+        out = apply_historical_display_columns(raw)
+        self.assertEqual(str(out.iloc[0]["posted_at_date"]), "2026-06-11")
 
 
 class JobsCsvAlignedViewTests(unittest.TestCase):
@@ -342,7 +380,6 @@ class DashboardCrmLoaderTests(unittest.TestCase):
                     last_seen=now,
                     jobs_connected=2,
                     recruiter_stage="discovered",
-                    currently_active=True,
                 )
             )
             session.commit()
@@ -451,7 +488,6 @@ class DashboardWriteRoundTripTests(unittest.TestCase):
                     recruiter_stage="discovered",
                     first_seen=now,
                     last_seen=now,
-                    currently_active=True,
                 )
             )
             session.commit()
@@ -560,7 +596,6 @@ class CrmBooleanNormalizationTests(unittest.TestCase):
                             recruiter_stage="discovered",
                             first_seen=now,
                             last_seen=now,
-                            currently_active=True,
                             recruiter_replied=False,
                             outreach_sent=True,
                         )

@@ -41,6 +41,18 @@ class Job(Base):
     time_posted: Mapped[str | None] = mapped_column(String(128))
     posted_at_date: Mapped[str | None] = mapped_column(String(32))
     age_days: Mapped[int | None] = mapped_column(Integer)
+    listing_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="open", index=True
+    )
+    listing_status_reason: Mapped[str | None] = mapped_column(Text)
+    listing_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    listing_check_attempted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    consecutive_check_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    listing_check_paused_at: Mapped[datetime | None] = mapped_column(DateTime)
+    listing_closed_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    listing_removed_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
     )
@@ -67,6 +79,7 @@ class AcquisitionRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
     notes: Mapped[str | None] = mapped_column(Text)
+    run_trigger: Mapped[str | None] = mapped_column(String(16))
 
     observations: Mapped[list["JobObservation"]] = relationship(back_populates="run")
     query_runs: Mapped[list["AcquisitionQueryRun"]] = relationship(
@@ -114,7 +127,6 @@ class JobObservation(Base):
     )
     source: Mapped[str | None] = mapped_column(String(64))
     observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    currently_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     times_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     job: Mapped["Job"] = relationship(back_populates="observations")
@@ -149,6 +161,9 @@ class AiEvaluation(Base):
     run_id: Mapped[int | None] = mapped_column(
         ForeignKey("acquisition_runs.id", ondelete="SET NULL"), index=True
     )
+    ai_refresh_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ai_refresh_runs.id", ondelete="SET NULL"), index=True
+    )
     ai_status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     ai_score: Mapped[float | None] = mapped_column(Float)
     reason: Mapped[str | None] = mapped_column(Text)
@@ -157,6 +172,39 @@ class AiEvaluation(Base):
 
     job: Mapped["Job"] = relationship(back_populates="evaluations")
     run: Mapped["AcquisitionRun | None"] = relationship(back_populates="evaluations")
+    ai_refresh_run: Mapped["AiRefreshRun | None"] = relationship(
+        back_populates="evaluations"
+    )
+
+
+class AiRefreshRun(Base):
+    __tablename__ = "ai_refresh_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    preset: Mapped[str] = mapped_column(String(32), nullable=False, default="backlog")
+    cohort_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    eligible_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scored_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    persist_skipped_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    skipped_no_description: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    skipped_by_cap_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    batch_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duration_sec: Mapped[float | None] = mapped_column(Float)
+    profile_path: Mapped[str | None] = mapped_column(Text)
+    error_summary: Mapped[str | None] = mapped_column(Text)
+
+    evaluations: Mapped[list["AiEvaluation"]] = relationship(
+        back_populates="ai_refresh_run"
+    )
 
 
 class UserJobState(Base):
@@ -235,3 +283,69 @@ class QueryCooldownState(Base):
     query_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     last_run_at: Mapped[float | None] = mapped_column(Float)
     domain_rotation_index: Mapped[int | None] = mapped_column(Integer)
+
+
+class LifecycleMonitorRun(Base):
+    __tablename__ = "lifecycle_monitor_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    cohort_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    checked_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    open_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    closed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    removed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    check_failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    paused_skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    terminal_skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duration_sec: Mapped[float | None] = mapped_column(Float)
+    error_summary: Mapped[str | None] = mapped_column(Text)
+    check_failed_rate: Mapped[float | None] = mapped_column(Float)
+    monitor_health: Mapped[str | None] = mapped_column(String(16))
+    systemic_alert: Mapped[str | None] = mapped_column(String(64))
+    auth_health: Mapped[str | None] = mapped_column(String(16))
+    parity_warning_summary: Mapped[str | None] = mapped_column(Text)
+    provider_summary: Mapped[str | None] = mapped_column(Text)
+    run_trigger: Mapped[str | None] = mapped_column(String(16))
+
+
+class MonitorProviderState(Base):
+    __tablename__ = "monitor_provider_state"
+
+    source: Mapped[str] = mapped_column(String(32), primary_key=True)
+    health: Mapped[str] = mapped_column(String(16), nullable=False, default="ok")
+    reason: Mapped[str | None] = mapped_column(Text)
+    detected_at: Mapped[datetime | None] = mapped_column(DateTime)
+    backoff_until: Mapped[datetime | None] = mapped_column(DateTime)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class OutreachAttempt(Base):
+    __tablename__ = "outreach_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    person_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    company: Mapped[str] = mapped_column(String(512), nullable=False)
+    designation: Mapped[str | None] = mapped_column(String(255))
+    linkedin_url: Mapped[str | None] = mapped_column(Text)
+    outreach_channel: Mapped[str] = mapped_column(String(64), nullable=False)
+    outreach_message: Mapped[str | None] = mapped_column(Text)
+    ai_recommended_message: Mapped[str | None] = mapped_column(Text)
+    date_contacted: Mapped[str] = mapped_column(String(32), nullable=False)
+    follow_up_date: Mapped[str | None] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+    opportunity_id: Mapped[str | None] = mapped_column(String(255))
+    opportunity_url: Mapped[str | None] = mapped_column(Text)
+    hiring_signal_type: Mapped[str | None] = mapped_column(String(64))
+    hiring_signal_url: Mapped[str | None] = mapped_column(Text)
+    outreach_type: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

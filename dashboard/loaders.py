@@ -27,6 +27,7 @@ _loader_diagnostics: dict[str, Any] = {
     "jobs_source": "csv",
     "historical_source": "csv",
     "crm_source": "csv",
+    "outreach_source": "csv",
     "jobs_csv_fallback_rows": 0,
     "historical_full_csv_fallback": False,
     "crm_full_csv_fallback": False,
@@ -39,6 +40,7 @@ def reset_loader_diagnostics() -> None:
             "jobs_source": "csv",
             "historical_source": "csv",
             "crm_source": "csv",
+            "outreach_source": "csv",
             "jobs_csv_fallback_rows": 0,
             "historical_full_csv_fallback": False,
             "crm_full_csv_fallback": False,
@@ -214,18 +216,11 @@ def load_dashboard_historical_df() -> pd.DataFrame:
 
 
 def apply_historical_display_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """AI columns and time_posted fallback for historical_display_df."""
+    """AI columns for dashboard display; preserves posted_at_date for Posted UI."""
     if df.empty:
         return df
 
-    out = apply_dashboard_job_ai_columns(df.copy())
-
-    if "time_posted" not in out.columns and "last_seen" in out.columns:
-        out["time_posted"] = (
-            out["last_seen"].astype(str).str.split(" ").str[0]
-        )
-
-    return out
+    return apply_dashboard_job_ai_columns(df.copy())
 
 
 def _empty_recruiter_crm_df() -> pd.DataFrame:
@@ -307,11 +302,31 @@ def _load_recruiter_crm_from_csv() -> pd.DataFrame:
     return normalize_recruiter_crm_columns(pd.read_csv(str(crm_path)))
 
 
+def _apply_listing_visible_jobs_connected(df: pd.DataFrame, session) -> pd.DataFrame:
+    from db.read.monitor_runs import load_recruiter_visible_jobs_connected
+
+    if df.empty:
+        return df
+
+    visible_counts = load_recruiter_visible_jobs_connected(session)
+    if not visible_counts:
+        return df
+    out = df.copy()
+    key_col = "RECRUITER_KEY" if "RECRUITER_KEY" in out.columns else "recruiter_key"
+    if key_col not in out.columns:
+        return out
+    out["jobs_connected"] = out[key_col].map(
+        lambda key: visible_counts.get(str(key or "").strip(), 0)
+    )
+    return out
+
+
 def _load_recruiter_crm_from_sqlite() -> pd.DataFrame:
     ensure_database_ready()
     with get_dashboard_read_session() as session:
         assert_read_views_present(session)
         df = load_active_recruiters_view_df(session)
+        df = _apply_listing_visible_jobs_connected(df, session)
 
     df = normalize_recruiter_crm_columns(df)
     csv_df = _load_recruiter_crm_from_csv()
@@ -347,3 +362,109 @@ def load_recruiter_crm_df() -> pd.DataFrame:
             return _load_recruiter_crm_from_csv()
         except Exception:
             return _empty_recruiter_crm_df()
+
+
+def _empty_outreach_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "id",
+            "person_name",
+            "company",
+            "designation",
+            "linkedin_url",
+            "outreach_channel",
+            "outreach_message",
+            "date_contacted",
+            "follow_up_date",
+            "status",
+            "notes",
+            "opportunity_id",
+            "opportunity_url",
+            "hiring_signal_type",
+            "hiring_signal_url",
+            "created_at",
+            "updated_at",
+        ]
+    )
+
+
+def normalize_outreach_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return _empty_outreach_df()
+
+    out = df.copy()
+    out.columns = out.columns.str.strip()
+    for col in (
+        "person_name",
+        "company",
+        "designation",
+        "linkedin_url",
+        "outreach_channel",
+        "outreach_message",
+        "date_contacted",
+        "follow_up_date",
+        "status",
+        "notes",
+        "opportunity_id",
+        "opportunity_url",
+        "hiring_signal_type",
+        "hiring_signal_url",
+    ):
+        if col not in out.columns:
+            out[col] = ""
+        out[col] = out[col].fillna("").astype(str).str.strip()
+
+    if "id" in out.columns:
+        out["id"] = pd.to_numeric(out["id"], errors="coerce").astype("Int64")
+
+    return out
+
+
+def _load_outreach_from_sqlite() -> pd.DataFrame:
+    from db.engine import get_session
+    from db.services.outreach_write import load_outreach_attempts_ordered
+
+    ensure_database_ready()
+    with get_session() as session:
+        rows = load_outreach_attempts_ordered(session)
+    if not rows:
+        return _empty_outreach_df()
+    records = [
+        {
+            "id": row.id,
+            "person_name": row.person_name,
+            "company": row.company,
+            "designation": row.designation or "",
+            "linkedin_url": row.linkedin_url or "",
+            "outreach_channel": row.outreach_channel,
+            "outreach_message": row.outreach_message or "",
+            "date_contacted": row.date_contacted,
+            "follow_up_date": row.follow_up_date or "",
+            "status": row.status,
+            "notes": row.notes or "",
+            "opportunity_id": row.opportunity_id or "",
+            "opportunity_url": row.opportunity_url or "",
+            "hiring_signal_type": row.hiring_signal_type or "",
+            "hiring_signal_url": row.hiring_signal_url or "",
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+        for row in rows
+    ]
+    return normalize_outreach_columns(pd.DataFrame.from_records(records))
+
+
+def load_outreach_df() -> pd.DataFrame:
+    """Outreach attempt log for dashboard (SQLite only in V1)."""
+    warn_if_sqlite_read_without_enabled()
+
+    if not dashboard_read_enabled():
+        return _empty_outreach_df()
+
+    try:
+        df = _load_outreach_from_sqlite()
+        _loader_diagnostics["outreach_source"] = "sqlite"
+        return df
+    except Exception:
+        _log.exception("Dashboard SQLite outreach load failed")
+        return _empty_outreach_df()

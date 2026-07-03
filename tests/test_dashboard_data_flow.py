@@ -17,10 +17,11 @@ for entry in (str(_REPO_ROOT), str(_DASHBOARD)):
 
 from data_flow import (  # noqa: E402
     SidebarFilterState,
-    apply_activity_visibility,
+    apply_date_range_filter,
     apply_sidebar_filters,
     build_dashboard_df,
 )
+from listing_visibility import apply_listing_visibility  # noqa: E402
 from funnel import compute_progression_funnel_counts  # noqa: E402
 from recommended_actions import compute_recommended_actions  # noqa: E402
 
@@ -32,10 +33,12 @@ def _job_row(
     source: str = "instahyre",
     is_ai_scored: bool = False,
     score: float = 0,
-    currently_active: bool = True,
+    listing_status: str = "open",
     hiring_manager: str = "Not Specified",
     ai_status: str = "pending",
     first_seen: str = "2026-06-09 12:00:00",
+    last_seen: str = "2026-06-17 10:00:00",
+    posted_at_date: str | None = "2026-06-09",
     reason: str = "",
 ) -> dict:
     return {
@@ -50,9 +53,11 @@ def _job_row(
         "is_ai_scored": is_ai_scored,
         "ai_status": ai_status,
         "score": score,
-        "currently_active": currently_active,
+        "listing_status": listing_status,
         "hiring_manager": hiring_manager,
         "first_seen": first_seen,
+        "last_seen": last_seen,
+        "posted_at_date": posted_at_date,
         "reason": reason,
         "applied": False,
         "rejected": False,
@@ -64,7 +69,7 @@ def _job_row(
 
 def _default_filters(**overrides) -> SidebarFilterState:
     base = {
-        "date_column": "last_seen",
+        "date_column": "posted_at_date",
         "date_preset": "All time",
         "custom_start": None,
         "custom_end": None,
@@ -79,11 +84,11 @@ def _default_filters(**overrides) -> SidebarFilterState:
 
 
 class DashboardDfTests(unittest.TestCase):
-    def test_dashboard_df_applies_activity_visibility_only(self) -> None:
+    def test_dashboard_df_applies_listing_visibility_only(self) -> None:
         raw = pd.DataFrame(
             [
-                _job_row(stage="New", currently_active=False),
-                _job_row(stage="Applied", currently_active=False),
+                _job_row(stage="New", listing_status="removed"),
+                _job_row(stage="Applied", listing_status="closed"),
             ]
         )
         dashboard_df = build_dashboard_df(raw)
@@ -93,9 +98,9 @@ class DashboardDfTests(unittest.TestCase):
     def test_header_total_jobs_matches_dashboard_df(self) -> None:
         raw = pd.DataFrame(
             [
-                _job_row(stage="New", currently_active=True),
-                _job_row(stage="New", currently_active=False),
-                _job_row(stage="Applied", currently_active=False),
+                _job_row(stage="New", listing_status="open"),
+                _job_row(stage="New", listing_status="removed"),
+                _job_row(stage="Applied", listing_status="closed"),
             ]
         )
         dashboard_df = build_dashboard_df(raw)
@@ -153,7 +158,7 @@ class SidebarFilterIsolationTests(unittest.TestCase):
         filtered_df = apply_sidebar_filters(self.dashboard_df, filters)
         self.assertEqual(len(filtered_df), 2)
         self.assertEqual(len(self.dashboard_df), 4)
-        self.assertEqual(len(apply_activity_visibility(self.dashboard_df)), 4)
+        self.assertEqual(len(apply_listing_visibility(self.dashboard_df)), 4)
 
     def test_recommended_actions_stable_under_sidebar_filters(self) -> None:
         cohort = pd.DataFrame(
@@ -190,6 +195,153 @@ class SidebarFilterIsolationTests(unittest.TestCase):
         self.assertEqual(before.apply_today_total, after.apply_today_total)
         self.assertEqual(before.apply_this_week_total, after.apply_this_week_total)
         self.assertEqual(before.needs_review_total, after.needs_review_total)
+
+
+class PostedAtDateFilterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.null_job = _job_row(
+            stage="New",
+            location="NullPosted",
+            is_ai_scored=True,
+            score=8,
+            ai_status="scored",
+            posted_at_date=None,
+            last_seen="2026-06-17 10:00:00",
+        )
+        self.dated_job = _job_row(
+            stage="New",
+            location="DatedPosted",
+            is_ai_scored=True,
+            score=8,
+            ai_status="scored",
+            posted_at_date="2026-06-09",
+            last_seen="2026-06-17 10:00:00",
+        )
+        self.cohort = pd.DataFrame([self.null_job, self.dated_job])
+
+    def test_null_posted_at_date_visible_in_default_dashboard_view(self) -> None:
+        dashboard_df = build_dashboard_df(self.cohort)
+        self.assertEqual(len(dashboard_df), 2)
+
+        filters = _default_filters(date_column="posted_at_date", date_preset="All time")
+        filtered_df = apply_sidebar_filters(dashboard_df, filters)
+        self.assertEqual(len(filtered_df), len(dashboard_df))
+        self.assertIn(
+            "v2:key-New-NullPosted",
+            set(filtered_df["JOB_KEY_V2"].astype(str)),
+        )
+
+    def test_build_dashboard_df_does_not_use_last_seen_as_posted_at_date(self) -> None:
+        dashboard_df = build_dashboard_df(self.cohort)
+        null_row = dashboard_df[
+            dashboard_df["JOB_KEY_V2"] == "v2:key-New-NullPosted"
+        ].iloc[0]
+        self.assertTrue(pd.isna(null_row["posted_at_date"]))
+
+    def test_all_time_includes_null_posted_at_date(self) -> None:
+        out = apply_date_range_filter(
+            self.cohort,
+            date_column="posted_at_date",
+            preset="All time",
+            custom_start=None,
+            custom_end=None,
+        )
+        self.assertEqual(len(out), 2)
+
+    def test_last_7_days_excludes_null_posted_at_date(self) -> None:
+        out = apply_date_range_filter(
+            self.cohort,
+            date_column="posted_at_date",
+            preset="Last 7 days",
+            custom_start=None,
+            custom_end=None,
+        )
+        self.assertEqual(len(out), 0)
+
+    def test_last_30_days_excludes_null_posted_at_date(self) -> None:
+        out = apply_date_range_filter(
+            self.cohort,
+            date_column="posted_at_date",
+            preset="Last 30 days",
+            custom_start=None,
+            custom_end=None,
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(str(out.iloc[0]["JOB_KEY_V2"]), "v2:key-New-DatedPosted")
+        self.assertNotIn(
+            "v2:key-New-NullPosted",
+            set(out["JOB_KEY_V2"].astype(str)),
+        )
+
+    def test_custom_range_excludes_null_posted_at_date(self) -> None:
+        out = apply_date_range_filter(
+            self.cohort,
+            date_column="posted_at_date",
+            preset="Custom",
+            custom_start=date(2026, 6, 1),
+            custom_end=date(2026, 6, 30),
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(str(out.iloc[0]["JOB_KEY_V2"]), "v2:key-New-DatedPosted")
+
+    def test_custom_range_missing_dates_includes_null_posted_at_date(self) -> None:
+        out = apply_date_range_filter(
+            self.cohort,
+            date_column="posted_at_date",
+            preset="Custom",
+            custom_start=None,
+            custom_end=None,
+        )
+        self.assertEqual(len(out), 2)
+
+    def test_dashboard_count_invariant_under_default_filters(self) -> None:
+        dashboard_df = build_dashboard_df(self.cohort)
+        kpi_count = len(dashboard_df)
+        filtered_df = apply_sidebar_filters(
+            dashboard_df,
+            _default_filters(date_column="posted_at_date", date_preset="All time"),
+        )
+        self.assertEqual(len(filtered_df), kpi_count)
+
+
+class EditorPostedColumnTests(unittest.TestCase):
+    def test_posted_column_from_posted_at_date_not_last_seen(self) -> None:
+        from app import _build_editor_df
+
+        raw = pd.DataFrame(
+            [
+                _job_row(
+                    stage="New",
+                    is_ai_scored=True,
+                    score=8,
+                    ai_status="scored",
+                    posted_at_date="2026-06-11",
+                    last_seen="2026-06-17 10:00:00",
+                )
+            ]
+        )
+        dashboard_df = build_dashboard_df(raw)
+        editor_df = _build_editor_df(dashboard_df, raw)
+        self.assertEqual(editor_df.iloc[0]["Posted"], "11-06-2026")
+
+    def test_null_posted_at_date_renders_blank(self) -> None:
+        from app import _build_editor_df
+
+        raw = pd.DataFrame(
+            [
+                _job_row(
+                    stage="New",
+                    is_ai_scored=True,
+                    score=8,
+                    ai_status="scored",
+                    posted_at_date=None,
+                    last_seen="2026-06-17 10:00:00",
+                )
+            ]
+        )
+        dashboard_df = build_dashboard_df(raw)
+        editor_df = _build_editor_df(dashboard_df, raw)
+        self.assertEqual(editor_df.iloc[0]["Posted"], "")
 
 
 if __name__ == "__main__":

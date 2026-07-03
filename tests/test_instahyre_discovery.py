@@ -10,6 +10,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
+from monitor.instahyre_session import is_valid_candidate_session_url  # noqa: E402
 from scraper.instahyre import (  # noqa: E402
     _DEFAULT_MAX_JOBS_PER_FEED,
     _FEED_ID_INTERESTED_SYNC,
@@ -23,7 +24,6 @@ from scraper.instahyre import (  # noqa: E402
     _opportunity_card_from_dom,
     VisibleDomCard,
     discovery_settings_for_feed,
-    is_valid_candidate_session_url,
     uses_dom_first_harvest,
 )
 

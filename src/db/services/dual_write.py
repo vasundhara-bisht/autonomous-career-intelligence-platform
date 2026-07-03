@@ -10,15 +10,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 import paths
+from agent.posted_date_derive import derive_posted_at_date
+from agent.run_trigger import ACQUISITION_RUN_TRIGGER_ENV, read_run_trigger
 from agent.pipeline_stages import is_user_managed_pipeline_stage
 from db.bootstrap import ensure_database_ready
 from db.config import sqlite_flag
 from db.engine import get_session
+from db.services.recruiter_enrichment import incoming_hm_is_sentinel_sql
 from db.models.schema import (
     AcquisitionQueryRun,
     AcquisitionRun,
@@ -187,7 +190,9 @@ class DualWriteContext:
 
 def _upsert_jobs(session: Session, jobs: list[dict[str, Any]]) -> tuple[dict[str, int], int]:
     payloads: dict[str, dict[str, Any]] = {}
+    anchor = datetime.now(UTC).date()
     for row in jobs:
+        row = derive_posted_at_date(row, anchor)
         v2 = _as_text(row.get("JOB_KEY_V2"))
         if not v2:
             continue
@@ -219,10 +224,18 @@ def _upsert_jobs(session: Session, jobs: list[dict[str, Any]]) -> tuple[dict[str
                     "location": stmt.excluded.location,
                     "source": stmt.excluded.source,
                     "link": stmt.excluded.link,
-                    "hiring_manager": stmt.excluded.hiring_manager,
+                    "hiring_manager": case(
+                        (
+                            incoming_hm_is_sentinel_sql(stmt.excluded.hiring_manager),
+                            Job.hiring_manager,
+                        ),
+                        else_=stmt.excluded.hiring_manager,
+                    ),
                     "time_posted": stmt.excluded.time_posted,
-                    "posted_at_date": stmt.excluded.posted_at_date,
-                    "age_days": stmt.excluded.age_days,
+                    "posted_at_date": func.coalesce(
+                        stmt.excluded.posted_at_date, Job.posted_at_date
+                    ),
+                    "age_days": func.coalesce(stmt.excluded.age_days, Job.age_days),
                     "updated_at": stmt.excluded.updated_at,
                 },
             )
@@ -237,6 +250,7 @@ def _upsert_acquisition_runs(session: Session, ctx: DualWriteContext) -> int:
         completed_at=ctx.run_completed_at,
         status=ctx.run_status,
         notes=ctx.run_notes,
+        run_trigger=read_run_trigger(ACQUISITION_RUN_TRIGGER_ENV),
     )
     session.add(row)
     session.flush()
@@ -363,7 +377,6 @@ def _upsert_job_observations(
         payload = {
             "source": _as_text(row.get("source")),
             "observed_at": _now_utc_naive(),
-            "currently_active": _as_bool(row.get("currently_active"), default=True),
             "times_seen": _as_int(row.get("times_seen")) or 1,
             "query_run_id": query_run_id,
         }
@@ -432,6 +445,7 @@ def _upsert_ai_evaluations(
         payload = {
             "job_id": job_id,
             "run_id": run_id,
+            "ai_refresh_run_id": None,
             "ai_status": status,
             "ai_score": _as_float(row.get("ai_score") if row.get("ai_score") is not None else row.get("score")),
             "reason": _as_text(row.get("reason")),
@@ -439,6 +453,12 @@ def _upsert_ai_evaluations(
             "evaluated_at": _now_utc_naive(),
         }
         existing_id = existing.get(job_id)
+        if existing_id:
+            refresh_run_id = session.execute(
+                select(AiEvaluation.ai_refresh_run_id).where(AiEvaluation.id == existing_id)
+            ).scalar_one_or_none()
+            if refresh_run_id is not None:
+                existing_id = None
         if existing_id:
             current = session.execute(
                 select(AiEvaluation.ai_status).where(AiEvaluation.id == existing_id)

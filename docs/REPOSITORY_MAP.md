@@ -2,7 +2,7 @@
 
 **File:** `docs/REPOSITORY_MAP.md` — primary structural navigation guide for the codebase.
 
-**Last audited:** 2026-06-12 (Phase 3A.2 UI polish, source display, dynamic panel height)
+**Last audited:** 2026-07-03 (Lifecycle Monitor Task 4 TD10; AI Refresh Health UI; listing visibility always on)
 
 **Operational snapshot:** [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md)
 
@@ -23,7 +23,8 @@ A **personal, local-first career intelligence platform**: multi-source job acqui
 ### Current maturity
 
 - **SQLite product memory (D0–D8B):** COMPLETE — `data/ai_job_agent.db` is the default operational source of truth.
-- **Production scheduler:** COMPLETE — macOS launchd at 10:00 / 21:00 IST via Phase 2.95.
+- **Production scheduler:** COMPLETE — macOS launchd acquisition **09:00 / 21:00 IST** (Phase 2.95) + lifecycle monitor **17:00 IST once daily** (Scheduler B Tasks 1–3 + OHM).
+- **Lifecycle Monitor (Scheduler B):** Tasks 1–4 **COMPLETE** — `listing_status`, `lifecycle_monitor_runs`, TD10 cutover; visibility always on (no dashboard flag).
 - **Active roadmap phase:** Phase 3 — Prioritization Intelligence (3A Recommended Actions shipped; 3B HM recruiter enrichment shipped; relationship action queues deferred).
 - **Unit tests:** 38 modules under `tests/`; contract/invariant coverage remains a roadmap priority.
 
@@ -49,14 +50,21 @@ No `SQLITE_*` environment variables are required for normal operation.
 ### Scheduler architecture
 
 ```text
-launchd plist (10:00 / 21:00 IST)
+launchd acquisition (09:00 / 21:00 IST)
   → scripts/scheduling/run_scheduled_acquisition.sh
     → source .env (OPENAI_API_KEY required)
     → export LINKEDIN_MAX_RUNS=3
-    → scripts/scheduling/with_file_lock.py (fcntl lock)
-      → scripts/scheduling/_acquisition_locked_body.sh
-        → python main.py
-        → validate_sqlite_parity.py --mode production --fail-on-error
+    → with_file_lock.py → _acquisition_locked_body.sh
+      → python main.py
+      → validate_sqlite_parity.py --mode production --fail-on-error
+
+launchd lifecycle monitor (17:00 IST once daily)
+  → scripts/scheduling/run_scheduled_lifecycle_monitor.sh
+    → source .env
+    → probe acquisition lock (skip exit 0 if held)
+    → with_file_lock.py → _lifecycle_monitor_locked_body.sh
+      → python scripts/run_lifecycle_monitor.py --apply
+      → validate_lifecycle_monitor_parity.py (TD9 warning-only)
 ```
 
 Install and configuration detail (plist labels, logs, uninstall): [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md) (canonical).
@@ -65,7 +73,7 @@ Install and configuration detail (plist labels, logs, uninstall): [SCHEDULER_SET
 
 **Today:** `src/agent/` is a **deterministic pipeline** — not an autonomous agent. Modules are stage-specific (normalize, filter, dedup, score, persist). OpenAI is used only for batch job-fit scoring.
 
-**Future:** Phase 11 (Autonomous Career Copilot) and Phase 14 (Autonomous Application Agent) in [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md). Likely new packages under `src/` (e.g. integrations, apply automation) — locations TBD.
+**Future:** Phase 11 (Autonomous Career Copilot) and Phase 14 (Autonomous Application Agent) in PRODUCT_STATUS_SUMMARY.md. Likely new packages under `src/` (e.g. integrations, apply automation) — locations TBD.
 
 ---
 
@@ -78,16 +86,16 @@ Install and configuration detail (plist labels, logs, uninstall): [SCHEDULER_SET
 | [`src/db/`](../src/db/) | SQLite product memory | `config.py`, `services/dual_write.py`, `models/schema.py`, `read/` | SQLAlchemy + Alembic |
 | [`src/paths.py`](../src/paths.py) | Canonical path resolution | `paths.py` | DATA_DIR, DB, config, auth paths |
 | [`scraper/`](../scraper/) | Source adapters + orchestrators | `linkedin.py`, `instahyre.py`, `linkedin_query_orchestrator.py`, `acquisition_gate.py` | Playwright + HTTP APIs |
-| [`dashboard/`](../dashboard/) | Streamlit operator UI | `app.py`, `loaders.py`, `data_flow.py`, `recommended_actions*.py`, `source_display.py`, `ui_help.py`, `display_text.py`, `funnel.py`, `funnel_workflow.py`, `recruiter_stages.py`, `recruiter_funnel.py`, `recruiter_workflow.py` | Read/write via SQLite views |
+| [`dashboard/`](../dashboard/) | Streamlit operator UI | `app.py`, `loaders.py`, `data_flow.py`, `recommended_actions*.py`, `outreach_*.py`, `operator_controls_ui.py`, `acquisition_ui.py`, `monitor_ui.py`, `ai_refresh_ui.py`, `source_display.py`, `ui_help.py`, `display_text.py`, `funnel.py`, `funnel_workflow.py`, `recruiter_stages.py`, `recruiter_funnel.py`, `recruiter_workflow.py` | Read/write via SQLite views |
 | [`scripts/`](../scripts/) | Ops, validation, maintenance | `scheduling/`, `validate_sqlite_parity.py`, `reset_state.sh`, `export_csv_memory.py` | Bash + venv Python |
 | [`config/`](../config/) | Non-secret runtime config | `linkedin_queries.json`, `instahyre_feeds.json`, `profiles/` | No API secrets |
 | [`docs/`](../docs/) | Canonical documentation | This file, roadmap, ops guides | 11+ markdown files |
 | [`tests/`](../tests/) | Unit tests | 38 `test_*.py` modules | `pytest` from repo root |
-| [`alembic/`](../alembic/) | DB schema migrations | `versions/001`–`004`, `env.py` | Head: `004_active_recruiters_view` |
+| [`alembic/`](../alembic/) | DB schema migrations | `versions/001`–`014`, `env.py` | Head: `014_drop_currently_active` |
 | [`archive_scrapers/`](../archive_scrapers/) | Retired scraper code | `mynexthire.py` | Not in active pipeline |
 | [`diagrams/`](../diagrams/) | Architecture visuals | `architecture-diagram.png`, `pipeline_flow.png` | See [§2.1 Diagram assets](#21-diagram-assets) |
 | [`data/`](../data/) | Runtime state (gitignored) | `ai_job_agent.db`, auth JSON, CSV exports | Created at runtime |
-| [`logs/`](../logs/) | Acquisition + debug logs (gitignored) | `scheduled/acquisition-*.log` | Scheduler output |
+| [`logs/`](../logs/) | Acquisition + scheduler logs (gitignored) | `scheduled/acquisition-*.log`, `scheduled/lifecycle-monitor-*.log` | Scheduler output |
 | [`archive/`](../archive/) | Reset snapshots (gitignored) | `reset-YYYYMMDD-HHMM/` | Created by `archive_state.sh` |
 | [`.env`](../.env) | Local secrets (gitignored) | `OPENAI_API_KEY`, optional overrides | Required for scheduled runs |
 
@@ -99,11 +107,17 @@ Install and configuration detail (plist labels, logs, uninstall): [SCHEDULER_SET
 | `pipeline_flow.png` | **Current** | README §End-to-End Pipeline Flow | `_generate_pipeline_flow_excalidraw.py` |
 | `pipeline_flow.excalidraw` | Source | Regenerate `pipeline_flow.png` | `_generate_pipeline_flow_excalidraw.py` |
 | `dashboard-hero.png` | **Current** (2026-06) | README Dashboard — Job Search Progression, KPI row, Last acquisition refresh | Manual Streamlit capture |
+| `dashboard-operator-controls.png` | **Current** (2026-07) | PCR §8, PRODUCTION_OPERATIONS §2.8 | Manual Streamlit capture |
+| `dashboard-acquisition-health.png` | **Pending refresh** | PCR §8 | Recapture: Acquisition Health KPIs + history (placeholder uses hero) |
+| `dashboard-monitor-health.png` | **Current** (2026-07) | PCR §8 | Manual Streamlit capture |
+| `dashboard-ai-refresh-health.png` | **Current** (2026-07) | PCR §8, PRODUCTION_OPERATIONS §2.8 | Manual Streamlit capture |
+| `dashboard-ai-refresh-popup.png` | **Pending refresh** | PCR §8, PRODUCTION_OPERATIONS §5.1 | Recapture: Run Refresh AI Evaluations dialog |
+| `dashboard-recommended-actions.png` | **Current** (2026-07) | README §Recommended Actions, PCR §8 | Manual Streamlit capture |
+| `dashboard-job-listings-listing-status.png` | **Current** (2026-07) | README, PCR §8, PRODUCTION_OPERATIONS §2.8 | Listing/Age columns; `listing_status` visibility |
 | `dashboard-crm.png` | **Pending refresh** | README CRM section | Manual capture: stage column only; no outreach columns |
-| `dashboard-recommended-actions.png` | **Pending** | README §Recommended Actions Command Center | Manual capture: four-queue 2×2 grid, Applied ✓, help icon, footer row |
-| `dashboard-source-filter.png` | **Pending** | PCR §8 / README § Dashboard | Manual capture: sidebar Source multiselect with human-readable labels |
-| `dashboard-source-distribution.png` | **Pending** | README § Dashboard / PCR §8 | Manual capture: Source Distribution chart with normalized labels |
-| `dashboard-job-listings-header.png` | **Pending** | README § Phase 3B / PCR §8 HM | Manual capture: Job Listings title with HM enrichment info icon |
+| `dashboard-source-filter.png` | **Current** (2026-06) | PCR §8 / README § Dashboard | Manual capture: sidebar Source multiselect with human-readable labels |
+| `dashboard-source-distribution.png` | **Current** (2026-06) | README § Dashboard / PCR §8 | Manual capture: Source Distribution chart with normalized labels |
+| `dashboard-job-listings-header.png` | **Superseded** | Legacy HM header capture | Use `dashboard-job-listings-listing-status.png` |
 | `dashboard-applied-quick-action.png` | **Pending** | OPS §2.8 / PCR §8 | Manual capture: Open Job, Applied ✓, Why? on one action row |
 | `dashboard-analytics.png` | **Deprecated** | Retired — Job Search Progression in hero; do not embed stale analytics-only UI | Superseded by hero |
 | `architecture-diagram.svg` | **Deprecated** | Not embedded in README | legacy (superseded by Eraser PNG) |
@@ -116,8 +130,10 @@ Install and configuration detail (plist labels, logs, uninstall): [SCHEDULER_SET
 | Entry point | How to run | Delegates to |
 |-------------|------------|--------------|
 | Pipeline | `python main.py` | [`src/agent/main.py`](../src/agent/main.py) via [`main.py`](../main.py) shim |
-| Dashboard | `streamlit run dashboard/app.py` | [`dashboard/app.py`](../dashboard/app.py) → [`dashboard/loaders.py`](../dashboard/loaders.py) |
-| Scheduled acquisition | launchd 10:00 / 21:00 IST | [`run_scheduled_acquisition.sh`](../scripts/scheduling/run_scheduled_acquisition.sh) |
+| Dashboard | `./scripts/run_dashboard.sh` | [`dashboard/app.py`](../dashboard/app.py) → [`dashboard/loaders.py`](../dashboard/loaders.py) |
+| Scheduled acquisition | launchd 09:00 / 21:00 IST | [`run_scheduled_acquisition.sh`](../scripts/scheduling/run_scheduled_acquisition.sh) |
+| Scheduled lifecycle monitor | launchd **17:00 IST once daily** | [`run_scheduled_lifecycle_monitor.sh`](../scripts/scheduling/run_scheduled_lifecycle_monitor.sh) |
+| Lifecycle monitor CLI | Manual / kickstart | [`scripts/run_lifecycle_monitor.py`](../scripts/run_lifecycle_monitor.py) |
 | Install scheduler | `./scripts/scheduling/install_launchagents.sh` | Plist templates in `scripts/scheduling/launchd/` |
 | LinkedIn acquisition | Inside pipeline | `run_linkedin_acquisition_session()` in [`linkedin_query_orchestrator.py`](../scraper/linkedin_query_orchestrator.py) |
 | Instahyre feed acquisition | Inside pipeline | `run_instahyre_feed_session()` in [`instahyre_feed_orchestrator.py`](../scraper/instahyre_feed_orchestrator.py) |
@@ -126,6 +142,7 @@ Install and configuration detail (plist labels, logs, uninstall): [SCHEDULER_SET
 | Parity validation | Post-run (automatic) or manual | [`scripts/validate_sqlite_parity.py`](../scripts/validate_sqlite_parity.py) |
 | DB init | First-time / recovery | [`scripts/db_init.py`](../scripts/db_init.py) |
 | State reset | Operator maintenance | [`scripts/reset_state.sh`](../scripts/reset_state.sh) |
+| AI refresh (manual) | Re-score without scrape | [`scripts/run_ai_refresh.py`](../scripts/run_ai_refresh.py) |
 
 Command detail: [PROJECT_COMMAND_REFERENCE.md](./PROJECT_COMMAND_REFERENCE.md).
 
@@ -154,11 +171,17 @@ Command detail: [PROJECT_COMMAND_REFERENCE.md](./PROJECT_COMMAND_REFERENCE.md).
 | **Analytics (v1)** | Pipeline counts, source rates, CRM counters | `dashboard/app.py` — **Pipeline analytics** expander | `dashboard_editor_df` | Phase 2.7C, 5 | 2.7C COMPLETE; Phase 5 PARTIAL |
 | **Instahyre Interested sync** | Applied-state sync from Interested filter | `instahyre.py`, `dual_write.persist_instahyre_interested_sync` | Early SQLite write | Phase 2.57 | COMPLETE |
 | **User-managed routing** | CRM stages skip AI (`not_required`) | `pipeline_stages.py`, `main.py` routing | SQLite pipeline read | Phase 2.6+ | COMPLETE |
-| **Scheduler** | Unattended acquisition + parity | `scripts/scheduling/*` | launchd, `.env` | Phase 2.95 | COMPLETE |
+| **Scheduler** | Unattended acquisition + lifecycle monitor + parity | `scripts/scheduling/*`, `src/monitor/`, `lifecycle_monitor.py` | launchd, `.env` | Phase 2.95, 2.96 | COMPLETE |
+| **Listing visibility (dashboard)** | `listing_status` always on (TD10) | `dashboard/listing_visibility.py`, `data_flow.py` | `listing_status` on jobs | Scheduler B Task 4 | COMPLETE |
+| **Operational health (dashboard)** | Acquisition + lifecycle monitor KPIs and run history | `acquisition_ui.py`, `monitor_ui.py`, `db/read/acquisition_runs.py`, `db/read/monitor_runs.py` | `acquisition_runs`, `lifecycle_monitor_runs` | Phase 2.96 | COMPLETE |
+| **Operational Controls (dashboard)** | Scheduler pause/resume/run-now; AI refresh trigger | `operator_controls_ui.py` | launchd, `SQLITE_DASHBOARD_WRITE` | Phase 2.96 / OHM | COMPLETE |
+| **AI Refresh (dashboard + CLI)** | Manual re-score runs without scrape | `ai_refresh_ui.py`, `scripts/run_ai_refresh.py`, `db/read/ai_refresh_*.py` | `ai_refresh_runs`, `ai_evaluations` | Ops | COMPLETE |
+| **LinkedIn Applied auto-promotion** | Monitor detects user-applied; promotes pipeline + `monitor_exempt` | `monitor/classifiers/linkedin.py`, `pipeline_promotion.py`, `lifecycle_monitor.py` | `user_job_state`, `jobs.listing_status` | Phase 2.96 | COMPLETE |
 | **Validation / parity** | Post-run DB health checks | `validate_sqlite_parity.py`, `parity_checks.py` | SQLite | Phase 2.56 | COMPLETE |
 | **Pipeline hardening** | Shared architecture, runtime stability | `src/agent/main.py`, `scraper/linkedin.py` | — | Phase 2.5 | MOSTLY COMPLETE |
 | **Prioritization (3A)** | Job action queues (rule-based) | `recommended_actions.py`, `recommended_actions_ui.py` | `dashboard_df` | Phase 3A | COMPLETE |
 | **HM recruiter enrichment (3B)** | Dashboard HM → recruiters + append-only links | `recruiter_enrichment.py` | `dashboard_write.py` | Phase 3B | COMPLETE |
+| **Outreach Intelligence V1–V1.3** | Outreach attempt log; V1.2 LinkedIn ingestion; V1.3 Job Outreach split (`outreach_type`, `job_listing`) | `outreach_ui.py`, `outreach_write.py`, `outreach_status.py`, `job_outreach*.py` | `outreach_attempts` | Phase 3D | COMPLETE |
 | **Recruiter relationship queues (3B+)** | Relationship action queues | *(deferred)* | CRM touch timestamps, notes UI | Phase 3B+ | FUTURE |
 | **Prioritization (3C+)** | Signal-weighted ranking, ML | *(not implemented)* | Phase 3 prerequisites | Phase 3 | FUTURE |
 | **Decision intelligence** | Career strategy recommendations | *(not implemented)* | Phase 3 | Phase 4 | FUTURE |
@@ -173,7 +196,7 @@ Command detail: [PROJECT_COMMAND_REFERENCE.md](./PROJECT_COMMAND_REFERENCE.md).
 | **Integrations ecosystem** | Calendar, Gmail, MCP, Slack | *(not implemented)* | — | Phase 13 | FUTURE |
 | **Autonomous application** | End-to-end apply execution | *(not implemented)* | Phases 7B, 13 | Phase 14 | FUTURE |
 
-Phase detail: [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md) §8–§9.
+Phase detail and evidence: PRODUCT_STATUS_SUMMARY.md.
 
 ---
 
@@ -231,7 +254,7 @@ flowchart TD
 
 | Flow | Path |
 |------|------|
-| **Dashboard write-back** | User edits → `dashboard_write.py` → `user_job_state` / `recruiters`; HM change → `recruiter_enrichment.py` (append-only links) |
+| **Dashboard write-back** | User edits → `dashboard_write.py` → `user_job_state` / `recruiters`; HM change → `recruiter_enrichment.py`; outreach → `outreach_write.py` → `outreach_attempts` |
 | **Scheduler post-run** | `_acquisition_locked_body.sh` → parity validation → exit code to launchd |
 | **Reset / archive** | `archive_state.sh` → `reset_state.sh` → truncate DB + seed from templates |
 | **CSV export / handoff** | `export_csv_memory.py` → `data/*.csv` |
@@ -280,7 +303,7 @@ Flags reference: [PROJECT_COMMAND_REFERENCE.md §10b](./PROJECT_COMMAND_REFERENC
 | `description_fetcher.py` | Playwright job-description fetch |
 | `ai_batch_scorer.py` | OpenAI batch scoring |
 | `profile_loader.py` | Candidate profile markdown loader |
-| `ai_runtime_config.py` | `BATCH_SIZE`, `DEBUG_LIMIT` resolution |
+| `ai_runtime_config.py` | `BATCH_SIZE` resolution |
 | `recruiter_crm.py` | Recruiter discovery + CRM field sync |
 | `logger.py` | Stage-1 structured debug logging |
 | `bootstrap_schema.py` | Legacy CSV schema helpers |
@@ -293,12 +316,12 @@ Flags reference: [PROJECT_COMMAND_REFERENCE.md §10b](./PROJECT_COMMAND_REFERENC
 |------|-----------|------|
 | Flags | `config.py` | D8B default-on `sqlite_flag()` gates |
 | Schema | `models/schema.py` | ORM tables: jobs, runs, observations, evaluations, recruiters, user_job_state, cooldown |
-| Read | `read/views.py`, `historical.py`, `crm.py`, `historical_index.py`, `export_cohort.py` | Views + pipeline/dashboard reads |
+| Read | `read/views.py`, `historical.py`, `crm.py`, `historical_index.py`, `export_cohort.py`, `ai_refresh_runs.py`, `ai_refresh_cohort.py` | Views + pipeline/dashboard reads |
 | Write | `services/dual_write.py`, `services/dashboard_write.py` | Cohort write; dashboard edits |
 | Validation | `services/parity_checks.py` | Parity modes for `validate_sqlite_parity.py` |
 | Bootstrap | `bootstrap.py`, `reset_sqlite.py` | DB readiness and reset helpers |
 
-Alembic migrations: `001_mvp_schema` → `002_read_views` → `003_query_metadata` → `004_active_recruiters_view`.
+Alembic migrations: `001_mvp_schema` → `002_read_views` → `003_query_metadata` → `004_active_recruiters_view` → `005_outreach_attempts` → `006_outreach_hiring_signal` → `007_outreach_message_ai` → `008_outreach_type` → `009_listing_status` → `010_monitor_provider_state` → `011_ai_refresh_runs` → `012_ai_refresh_persist_skipped` → `013_run_trigger` → `014_drop_currently_active` (head).
 
 ---
 
@@ -306,7 +329,7 @@ Alembic migrations: `001_mvp_schema` → `002_read_views` → `003_query_metadat
 
 | Source | Module | Orchestrator / config |
 |--------|--------|----------------------|
-| LinkedIn | `linkedin.py` | `linkedin_query_orchestrator.py` + `config/linkedin_queries.json` |
+| LinkedIn | `linkedin.py` | `linkedin_query_orchestrator.py` + `config/linkedin_queries.json` — HM extract (primary BEM + flagship3 fallback), `time_posted` |
 | Instahyre | `instahyre.py` | `instahyre_feed_orchestrator.py` + `config/instahyre_feeds.json` |
 | Greenhouse | `greenhouse.py` | `company_sources.py` |
 | Lever | `lever.py` | `company_sources.py` |
@@ -323,12 +346,11 @@ Alembic migrations: `001_mvp_schema` → `002_read_views` → `003_query_metadat
 | [README.md](../README.md) | All | Primary documentation index and product narrative |
 | [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md) | Onboarding, operator | Temporal status snapshot, capability maturity, limitations |
 | **REPOSITORY_MAP.md** (this file) | Dev, agent, operator | Structure, ownership, navigation |
-| [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md) | Planning | Phase statuses, evidence, priorities |
 | [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md) | Operator | Daily runbook, pre-production reset |
 | [PROJECT_COMMAND_REFERENCE.md](./PROJECT_COMMAND_REFERENCE.md) | Operator, dev | Commands, flags, troubleshooting |
 | [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md) | Operator | launchd install, schedule, logs |
 | [SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md](./SQLITE_PRODUCT_MEMORY_ARCHITECTURE.md) | Architect, dev | Data model depth, memory philosophy |
-| [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md) | Migration history | D0–D8B timeline, rollback reference |
+| [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md) | Migration history | D0–D8B timeline, rollback reference (archive) |
 | [PUBLIC_REPO.md](./PUBLIC_REPO.md) | Maintainer | Sanitized mirror checklist |
 | [config/profiles/README.md](../config/profiles/README.md) | Operator | AI candidate profile editing |
 
@@ -376,6 +398,11 @@ Full command syntax: [PROJECT_COMMAND_REFERENCE.md §10](./PROJECT_COMMAND_REFER
 | `scripts/cleanup_sqlite_orphan_job.py` | Remove orphan job rows by identity |
 | `scripts/migrate_identity_descriptions.py` | Identity/description migration helper |
 | `scripts/backfill_observation_query_runs.py` | Backfill observation metadata |
+| `scripts/backfill_posted_at_date.py` | Anchor derive `posted_at_date` from `last_seen` (dry-run default) |
+| `scripts/backfill_linkedin_posted_dates.py` | Playwright re-scrape `time_posted=Unknown` cohort |
+| `scripts/probe_linkedin_hiring_manager.py` | Live HM extraction validation (HM-missing vs success samples) |
+| `scripts/backfill_linkedin_hiring_managers.py` | Task C — manifest HM backfill (no-link sentinel cohort) |
+| `scripts/repair_linkedin_hm_overwrite_cohort.py` | Task E — restore HM from linked recruiter (single-link cohort) |
 | `scripts/identity_inventory.py` | Identity diagnostics |
 
 ### Debug / probes
@@ -395,10 +422,11 @@ Full command syntax: [PROJECT_COMMAND_REFERENCE.md §10](./PROJECT_COMMAND_REFER
 |------|--------------|
 | AI scoring | `test_ai_batch_scorer.py`, `test_ai_batch_normalization.py`, `test_ai_runtime_config.py`, `test_profile_loader.py` |
 | Pipeline / persistence | `test_historical_persistence.py`, `test_job_description_persistence.py`, `test_pipeline_read.py`, `test_bootstrap_guard.py`, `test_pipeline_user_managed_routing.py`, `test_materialize_applied_merge.py` |
-| SQLite / DB | `test_db_read_views.py`, `test_d2_export.py`, `test_dual_write_metadata.py`, `test_dual_write_applied_merge.py`, `test_reset_sqlite.py`, `test_sqlite_flag_defaults.py`, `test_sqlite_orphan_cleanup.py`, `test_write_primary.py` |
-| Dashboard | `test_dashboard_loaders.py`, `test_dashboard_refresh_label.py`, `test_dashboard_visibility.py`, `test_dashboard_data_flow.py`, `test_dashboard_funnel.py`, `test_dashboard_funnel_workflow.py`, `test_dashboard_recruiter_funnel.py`, `test_dashboard_recruiter_workflow.py`, `test_recommended_actions.py`, `test_recommended_actions_applied.py`, `test_display_text.py`, `test_source_display.py`, `test_dashboard_job_hiring_manager.py`, `test_recruiter_enrichment.py` |
+| SQLite / DB | `test_db_read_views.py`, `test_d2_export.py`, `test_dual_write_metadata.py`, `test_dual_write_applied_merge.py`, `test_dual_write_hiring_manager_merge.py`, `test_reset_sqlite.py`, `test_sqlite_flag_defaults.py`, `test_sqlite_orphan_cleanup.py`, `test_write_primary.py` |
+| Dashboard | `test_dashboard_loaders.py`, `test_dashboard_refresh_label.py`, `test_dashboard_visibility.py`, `test_dashboard_data_flow.py`, `test_dashboard_funnel.py`, `test_dashboard_funnel_workflow.py`, `test_dashboard_recruiter_funnel.py`, `test_dashboard_recruiter_workflow.py`, `test_recommended_actions.py`, `test_recommended_actions_applied.py`, `test_display_text.py`, `test_source_display.py`, `test_dashboard_job_hiring_manager.py`, `test_recruiter_enrichment.py`, `test_ai_refresh_ui.py`, `test_operator_controls_ui.py`, `test_outreach_*.py` |
+| Lifecycle / promotion | `test_lifecycle_classifiers_linkedin.py`, `test_pipeline_promotion.py`, `test_lifecycle_write.py` |
 | Validation | `test_validation_modes.py` |
-| Scraper / Instahyre | `test_instahyre_discovery.py`, `test_instahyre_interested_sync.py`, `test_instahyre_applied_status.py`, `test_linkedin_anchor_url.py` |
+| Scraper / Instahyre / LinkedIn ops | `test_instahyre_discovery.py`, `test_instahyre_interested_sync.py`, `test_instahyre_applied_status.py`, `test_linkedin_anchor_url.py`, `test_linkedin_hiring_manager_extract.py`, `test_backfill_linkedin_hiring_managers.py`, `test_backfill_linkedin_posted_dates.py`, `test_repair_linkedin_hm_overwrite_cohort.py`, `test_job_outreach_prefill.py`, `test_job_outreach_read.py` |
 | Scheduling | `test_with_file_lock.py` |
 
 **Gap (roadmap priority):** Contract/invariant tests for Stage-1, dedup, and identity rules are not yet comprehensive.
@@ -411,6 +439,7 @@ Full command syntax: [PROJECT_COMMAND_REFERENCE.md §10](./PROJECT_COMMAND_REFER
 |---------------|------------------------|-------|
 | Phase 3A / 3A.2 Recommended Actions | `dashboard/recommended_actions*.py`, `display_text.py`, `source_display.py`, `ui_help.py` | **Shipped** — four-queue waterfall Command Center (High Confidence, Apply Today, Apply This Week, Needs Review); Applied ✓ on apply queues |
 | Phase 3B HM enrichment | `src/db/services/recruiter_enrichment.py` | **Shipped** — Job Listings HM edit; append-only links |
+| Outreach Intelligence V1–V1.3 | `dashboard/outreach_*.py`, `src/db/services/outreach_write.py`, `src/db/read/job_outreach.py`, `src/agent/job_outreach_prefill.py` | **Shipped** — V1.1 hiring signal capture; V1.2 LinkedIn post ingestion; V1.3 Job Outreach split (`outreach_type`, `job_listing`) |
 | Phase 3B+ relationship queues | `dashboard/` (future module) | Dormant/warm/health action queues — deferred |
 | Phase 3C+ Prioritization | `src/agent/` + `dashboard/app.py` | Signal weighting, ML — future |
 | Phase 5 Advanced analytics | `src/db/read/` views + dashboard | `source_effectiveness_view`, time-series |
@@ -419,7 +448,7 @@ Full command syntax: [PROJECT_COMMAND_REFERENCE.md §10](./PROJECT_COMMAND_REFER
 | Phase 13 Integrations | `src/integrations/` or similar (TBD) | Calendar, Gmail, MCP, Slack |
 | Phase 14 Autonomous application | `scraper/` or dedicated package (TBD) | Playwright apply flows, safeguards |
 
-Canonical phase detail: [PRODUCT_STATUS_SUMMARY.md](./PRODUCT_STATUS_SUMMARY.md) §9.
+Canonical phase detail: PRODUCT_STATUS_SUMMARY.md.
 
 ---
 

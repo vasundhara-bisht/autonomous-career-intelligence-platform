@@ -6,6 +6,7 @@ import os
 
 DEFAULT_DEBUG_LIMIT = 300
 DEFAULT_BATCH_SIZE = 15
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 
 
 def resolve_debug_limit() -> int:
@@ -14,6 +15,12 @@ def resolve_debug_limit() -> int:
     if raw:
         return int(raw)
     return DEFAULT_DEBUG_LIMIT
+
+
+def resolve_openai_model() -> str:
+    """OpenAI model to use for all AI calls. Override: OPENAI_MODEL env (model string)."""
+    raw = os.environ.get("OPENAI_MODEL", "").strip()
+    return raw if raw else DEFAULT_OPENAI_MODEL
 
 
 def resolve_batch_size() -> int:

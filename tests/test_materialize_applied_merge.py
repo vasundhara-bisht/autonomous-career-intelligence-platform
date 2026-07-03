@@ -75,6 +75,40 @@ class MaterializeAppliedMergeTests(unittest.TestCase):
         materialize_fully_processed_job(job, historical)
         self.assertTrue(job["applied"])
 
+    def test_sentinel_scrape_preserves_historical_hiring_manager(self) -> None:
+        job = {
+            "applied": False,
+            "title": "PM",
+            "company": "Co",
+            "hiring_manager": "Not Specified",
+        }
+        historical = {
+            "applied": False,
+            "pipeline_stage": "New",
+            "ai_score": 8.0,
+            "ai_status": "scored",
+            "hiring_manager": "Jane Recruiter",
+        }
+        materialize_fully_processed_job(job, historical)
+        self.assertEqual(job["hiring_manager"], "Jane Recruiter")
+
+    def test_valid_scrape_hiring_manager_not_overwritten(self) -> None:
+        job = {
+            "applied": False,
+            "title": "PM",
+            "company": "Co",
+            "hiring_manager": "New Recruiter",
+        }
+        historical = {
+            "applied": False,
+            "pipeline_stage": "New",
+            "ai_score": 8.0,
+            "ai_status": "scored",
+            "hiring_manager": "Jane Recruiter",
+        }
+        materialize_fully_processed_job(job, historical)
+        self.assertEqual(job["hiring_manager"], "New Recruiter")
+
 
 if __name__ == "__main__":
     unittest.main()

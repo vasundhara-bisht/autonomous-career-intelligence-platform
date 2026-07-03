@@ -19,6 +19,8 @@ from scraper.instahyre import (  # noqa: E402
     OpportunityCard,
     _FEED_ID_INTERESTED_SYNC,
     _build_interested_sync_stub,
+    _enrich_interested_sync_stub,
+    _parse_instahyre_opportunity_tags,
     sync_instahyre_interested,
 )
 from sqlalchemy import func, select, text  # noqa: E402
@@ -56,14 +58,29 @@ class InterestedSyncStubTests(unittest.TestCase):
         self.assertEqual(stub["instahyre_feed_id"], _FEED_ID_INTERESTED_SYNC)
         self.assertEqual(stub["instahyre_query_id"], _FEED_ID_INTERESTED_SYNC)
         self.assertEqual(stub["instahyre_query_role"], "state_sync")
-        self.assertTrue(stub["currently_active"])
 
     def test_stub_returns_none_without_job_id(self) -> None:
         card = self._card(job_id="")
         self.assertIsNone(_build_interested_sync_stub(card))
 
+    def test_tag_meta_merged_into_stub(self) -> None:
+        card = self._card()
+        card.tags = ["Full-time", "Remote"]
+        stub = _build_interested_sync_stub(card)
+        assert stub is not None
+        enriched = _enrich_interested_sync_stub(
+            stub,
+            card,
+            detail_meta={},
+            tag_meta=_parse_instahyre_opportunity_tags(card.tags),
+        )
+        self.assertEqual(enriched["employment_type"], "full-time")
+        self.assertEqual(enriched["workplace_type"], "remote")
+        self.assertTrue(enriched["applied"])
+
 
 class InterestedSyncHarvestTests(unittest.TestCase):
+    @patch("scraper.instahyre._interested_detail_enrich_enabled", return_value=False)
     @patch("scraper.instahyre._collect_feed_opportunity_cards")
     @patch("scraper.instahyre._assert_candidate_session")
     @patch("scraper.instahyre._ensure_interested_filter_selected")
@@ -76,6 +93,7 @@ class InterestedSyncHarvestTests(unittest.TestCase):
         _mock_filter,
         _mock_assert,
         mock_collect,
+        _mock_enrich_disabled,
     ) -> None:
         card = OpportunityCard(
             job_id="111",
@@ -361,8 +379,8 @@ class PersistInterestedSyncTests(unittest.TestCase):
                     JobObservation.run_id == report["sync_run_id"],
                 )
             ).scalar_one()
-            self.assertTrue(obs.currently_active)
             self.assertEqual(obs.source, "instahyre")
+            self.assertEqual(obs.times_seen, 1)
             query_run = session.get(AcquisitionQueryRun, obs.query_run_id)
             assert query_run is not None
             self.assertEqual(query_run.query_id, _FEED_ID_INTERESTED_SYNC)
@@ -381,14 +399,13 @@ class PersistInterestedSyncTests(unittest.TestCase):
             row = session.execute(
                 text(
                     """
-                    SELECT currently_active, first_seen, last_seen, times_seen
+                    SELECT first_seen, last_seen, times_seen
                     FROM historical_jobs_view
                     WHERE JOB_KEY_V2 = :key
                     """
                 ),
                 {"key": key},
             ).mappings().one()
-            self.assertTrue(bool(row["currently_active"]))
             self.assertIsNotNone(row["first_seen"])
             self.assertIsNotNone(row["last_seen"])
             self.assertEqual(int(row["times_seen"]), 1)
@@ -556,7 +573,7 @@ class InterestedSyncCohortIsolationTests(unittest.TestCase):
             hist = session.execute(
                 text(
                     """
-                    SELECT currently_active
+                    SELECT listing_status
                     FROM historical_jobs_view
                     WHERE JOB_KEY_V2 = :key
                     """
@@ -569,7 +586,7 @@ class InterestedSyncCohortIsolationTests(unittest.TestCase):
         self.assertEqual(latest["notes"], "phase_c_runtime_dual_write")
         self.assertNotIn(interested_key, cohort)
         self.assertIn(discovery_key, cohort)
-        self.assertTrue(bool(hist["currently_active"]))
+        self.assertEqual(str(hist["listing_status"]).lower(), "open")
 
 
 if __name__ == "__main__":

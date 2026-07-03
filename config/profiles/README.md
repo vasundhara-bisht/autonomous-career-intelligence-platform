@@ -6,7 +6,7 @@ Canonical candidate identity and preferences for **OpenAI batch scoring** in the
 
 | File | Purpose |
 |------|---------|
-| [`ai_candidate_profile.example.md`](ai_candidate_profile.example.md) | Bundled example persona (target roles, industries, positive/negative signals) |
+| [`ai_candidate_profile.example.md`](ai_candidate_profile.example.md) | Example portfolio profile (fictional persona for demos) |
 
 Resolved by [`paths.ai_candidate_profile_path()`](../../src/paths.py) unless overridden.
 
@@ -34,19 +34,21 @@ Those live in [`src/agent/ai_batch_scorer.py`](../../src/agent/ai_batch_scorer.p
 
 ## Editing workflow
 
-1. Copy `ai_candidate_profile.example.md` to your own file (e.g. `my_profile.md`), edit, then set `AI_CANDIDATE_PROFILE_PATH`.
-2. Run acquisition — profile is loaded once at the start of AI scoring.
-3. Terminal logs show path and character count, e.g. `Candidate profile: ... (4177 chars)`.
+1. Edit `ai_candidate_profile.example.md` for local experiments, or set `AI_CANDIDATE_PROFILE_PATH` for a private profile.
+2. **Re-score without re-scraping:** run **Refresh AI Evaluations** from dashboard Operator Controls (`discovery` preset) or `python scripts/run_ai_refresh.py --preset discovery`. For unscored backlog only, use `--preset backlog`.
+3. Alternatively, run full acquisition — profile is loaded once at the start of AI scoring on newly queued jobs.
+4. Terminal logs show path and character count, e.g. `Candidate profile: ... (4177 chars)`.
 
 ## Token impact
 
-The example profile is ~4,000+ characters (~1,000 tokens) per batch request, in addition to job descriptions and the fixed instruction block. Shorter profiles reduce cost; longer profiles improve fit specificity.
+The v2 profile is ~4,000+ characters (~1,000 tokens) per batch request, in addition to job descriptions and the fixed instruction block. Shorter profiles reduce cost; longer profiles improve fit specificity.
 
-## Clone and publish guidance
+## Portfolio / public repos
 
-This is the portfolio repository. For first-time setup see [docs/CLONE_SETUP.md](../../docs/CLONE_SETUP.md). For maintainer publishing checks see [docs/PUBLIC_REPO.md](../../docs/PUBLIC_REPO.md).
+Replace personal data before publishing. Use a generic example profile or omit the file and document `AI_CANDIDATE_PROFILE_PATH` in [docs/PUBLIC_REPO.md](../../docs/PUBLIC_REPO.md).
 
 ## Related docs
 
-- [docs/PRODUCTION_OPERATIONS.md](../../docs/PRODUCTION_OPERATIONS.md) §5 — AI scoring configuration
+- [docs/PRODUCTION_OPERATIONS.md](../../docs/PRODUCTION_OPERATIONS.md) §5 — AI scoring configuration and Refresh AI Evaluations
+- [docs/PROJECT_COMMAND_REFERENCE.md](../../docs/PROJECT_COMMAND_REFERENCE.md) §8 — Operational Controls and AI Refresh Health
 - [docs/PRODUCT_STATUS_SUMMARY.md](../../docs/PRODUCT_STATUS_SUMMARY.md) §5 — profile overview

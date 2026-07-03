@@ -303,9 +303,29 @@ _JOB_POSTING_LD_JS = """
     } catch (e) {}
   });
   for (const block of blocks) {
-    if (block && block['@type'] === 'JobPosting' && block.datePosted) {
-      return { datePosted: String(block.datePosted) };
+    if (!block || block['@type'] !== 'JobPosting') continue;
+    let jobLocation = '';
+    const loc = block.jobLocation;
+    if (typeof loc === 'string') {
+      jobLocation = loc.trim();
+    } else if (loc && typeof loc === 'object') {
+      const addr = loc.address;
+      if (typeof addr === 'string') {
+        jobLocation = addr.trim();
+      } else if (addr && typeof addr === 'object') {
+        jobLocation = [
+          addr.addressLocality,
+          addr.addressRegion,
+          addr.addressCountry,
+        ].filter(Boolean).join(', ');
+      } else {
+        jobLocation = String(loc.name || loc.description || '').trim();
+      }
     }
+    return {
+      datePosted: block.datePosted ? String(block.datePosted) : '',
+      jobLocation,
+    };
   }
   return null;
 }
@@ -376,38 +396,9 @@ def _new_authenticated_context(browser):
     return browser.new_context(storage_state=_AUTH_PATH)
 
 
-_CANDIDATE_SESSION_PATH_PREFIXES = (
-    "/candidate/opportunities",
-    "/search-jobs",
-)
-_RECRUITER_SESSION_PATH_MARKERS = (
-    "/employer/",
-    "/recruiters/",
-    "/hiring/dashboard",
-)
-
-
-def is_valid_candidate_session_url(url: str) -> bool:
-    """
-    True when URL looks like an authenticated candidate surface (Feed 1 or Feed 2).
-    """
-    low = (url or "").strip().lower()
-    if not low or "instahyre.com" not in low:
-        return False
-    if "/login" in low:
-        return False
-    if "sign" in low and not any(
-        marker in low for marker in ("opportunities", "search-jobs", "/candidate/")
-    ):
-        return False
-    if any(marker in low for marker in _RECRUITER_SESSION_PATH_MARKERS):
-        return False
-    if "/job-" in low:
-        return True
-    return any(prefix in low for prefix in _CANDIDATE_SESSION_PATH_PREFIXES)
-
-
 def _assert_candidate_session(page: Page) -> None:
+    from monitor.instahyre_session import is_valid_candidate_session_url
+
     url = page.url or ""
     low = url.lower()
     if is_valid_candidate_session_url(url):
@@ -2314,6 +2305,29 @@ def _parse_posted_iso_date(raw: str) -> date | None:
         return None
 
 
+def _interested_detail_enrich_enabled() -> bool:
+    return _env_truthy("INSTAHYRE_INTERESTED_DETAIL_ENRICH", default=True)
+
+
+def _interested_detail_settle_ms() -> int:
+    return _env_int("INSTAHYRE_INTERESTED_DETAIL_SETTLE_MS", 1200)
+
+
+def _extract_job_posting_ld_fields(page: Page) -> dict[str, Any]:
+    """JobPosting JSON-LD: datePosted and optional jobLocation."""
+    empty: dict[str, Any] = {"datePosted": "", "jobLocation": ""}
+    try:
+        payload = page.evaluate(_JOB_POSTING_LD_JS)
+    except Exception:
+        return empty
+    if not isinstance(payload, dict):
+        return empty
+    return {
+        "datePosted": str(payload.get("datePosted") or "").strip(),
+        "jobLocation": str(payload.get("jobLocation") or "").strip(),
+    }
+
+
 def _extract_job_posting_posted_date(page: Page) -> dict[str, Any]:
     """
     Tier-2 metadata: JobPosting datePosted from JSON-LD on the open detail page.
@@ -2326,11 +2340,8 @@ def _extract_job_posting_posted_date(page: Page) -> dict[str, Any]:
         "age_days": None,
     }
     try:
-        payload = page.evaluate(_JOB_POSTING_LD_JS)
+        payload = _extract_job_posting_ld_fields(page)
     except Exception:
-        return empty
-
-    if not isinstance(payload, dict):
         return empty
 
     raw = str(payload.get("datePosted") or "").strip()
@@ -2418,11 +2429,60 @@ def _extract_job_posted_by(page: Page) -> dict[str, str]:
     return out
 
 
-def _open_card_detail(page: Page, card: OpportunityCard) -> bool:
+def _extract_instahyre_detail_metadata(
+    page: Page,
+    card: OpportunityCard,
+    *,
+    validate: bool = True,
+) -> dict[str, Any]:
+    """
+    Lightweight detail metadata (no description, applied detection, or scoring).
+    Returns merge-friendly dict with only non-empty fields; {} when invalid.
+    """
+    if validate:
+        reject = _validate_detail_page(page, card)
+        if reject:
+            return {}
+
+    meta: dict[str, Any] = {}
+
+    title = _extract_detail_title(page)
+    if title:
+        meta["title"] = title
+
+    company = _extract_detail_company(page)
+    if company:
+        meta["company"] = company
+
+    ld_fields = _extract_job_posting_ld_fields(page)
+    location = str(ld_fields.get("jobLocation") or "").strip()
+    if not location:
+        location = str(card.location or "").strip()
+    if location:
+        meta["location"] = location
+
+    posted_by = _extract_job_posted_by(page)
+    recruiter_name = str(posted_by.get("recruiter_name") or "").strip()
+    if _valid_recruiter_name(recruiter_name):
+        meta["hiring_manager"] = recruiter_name
+
+    posted_meta = _extract_job_posting_posted_date(page)
+    for key in ("posted_at_raw", "posted_at_source", "posted_at_date", "age_days"):
+        val = posted_meta.get(key)
+        if val is not None and val != "":
+            meta[key] = val
+
+    return meta
+
+
+def _open_card_detail(
+    page: Page, card: OpportunityCard, *, settle_ms: int | None = None
+) -> bool:
     """Navigate using Angular opportunity_url only."""
+    wait_ms = 2000 if settle_ms is None else settle_ms
     try:
         page.goto(card.canonical_url, timeout=45000, wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(wait_ms)
         return True
     except Exception as e:
         log_fail(
@@ -2438,12 +2498,13 @@ def _build_job_from_card(page: Page, card: OpportunityCard) -> dict | None:
         log_debug_rejection(reject, job_id=card.job_id, url=page.url)
         return None
 
-    title = _extract_detail_title(page)
+    meta = _extract_instahyre_detail_metadata(page, card, validate=False)
+    title = str(meta.get("title") or "").strip()
     if not title:
         log_debug_rejection("detail_title_missing", job_id=card.job_id)
         return None
 
-    company = _extract_detail_company(page)
+    company = str(meta.get("company") or "").strip()
     if not company:
         log_debug_rejection("detail_company_missing", job_id=card.job_id)
         return None
@@ -2453,24 +2514,27 @@ def _build_job_from_card(page: Page, card: OpportunityCard) -> dict | None:
         log_debug_rejection("detail_url_no_job_id", job_id=card.job_id, url=page.url)
         return None
 
-    link = card.canonical_url
-    description = _extract_description(page)
-    posted_by = _extract_job_posted_by(page)
-    posted_meta = _extract_job_posting_posted_date(page)
+    posted_meta = {
+        k: meta.get(k)
+        for k in ("posted_at_raw", "posted_at_source", "posted_at_date", "age_days")
+    }
     if posted_meta.get("posted_at_date") is not None and posted_meta.get("age_days") is not None:
         log_debug(
             f"✅ Posted Date: {posted_meta['posted_at_date']} "
             f"({posted_meta['age_days']} days old)"
         )
+
+    posted_by = _extract_job_posted_by(page)
     recruiter_name = posted_by.get("recruiter_name") or "Not Specified"
-    hiring_manager = recruiter_name
+    hiring_manager = meta.get("hiring_manager") or recruiter_name
+    description = _extract_description(page)
     applied = _detect_applied_on_detail_page(page)
 
     return {
         "title": title,
         "company": company,
-        "location": card.location,
-        "link": link,
+        "location": meta.get("location") or card.location,
+        "link": card.canonical_url,
         "description": description,
         "source": "instahyre",
         "time_posted": "Unknown",
@@ -2660,6 +2724,99 @@ def _ensure_interested_filter_selected(page: Page) -> None:
         log_debug("[debug] interested_sync: selected Interested via sidebar click")
 
 
+_EMPLOYMENT_TYPE_TAGS = (
+    "full-time",
+    "full time",
+    "part-time",
+    "part time",
+    "contract",
+    "internship",
+    "intern",
+    "freelance",
+    "temporary",
+)
+_WORKPLACE_TYPE_TAGS = (
+    "remote",
+    "hybrid",
+    "on-site",
+    "onsite",
+    "on site",
+    "work from home",
+    "wfh",
+)
+_EXPERIENCE_LEVEL_RE = re.compile(
+    r"(\d+\+?\s*(?:years?|yrs?))|"
+    r"(entry[\s-]?level|senior|lead|principal|staff|director|head|"
+    r"junior|mid[\s-]?level|experienced)",
+    re.IGNORECASE,
+)
+
+
+def _parse_instahyre_opportunity_tags(tags: list[str]) -> dict[str, str]:
+    """Classify list-card keyword tags into employment metadata fields."""
+    employment_type = ""
+    workplace_type = ""
+    experience_level = ""
+    normalized = [str(t or "").strip().lower() for t in tags if str(t or "").strip()]
+
+    for tag in normalized:
+        if not employment_type:
+            for pattern in _EMPLOYMENT_TYPE_TAGS:
+                if pattern in tag or tag == pattern:
+                    employment_type = tag
+                    break
+        if not workplace_type:
+            for pattern in _WORKPLACE_TYPE_TAGS:
+                if pattern in tag or tag == pattern:
+                    workplace_type = tag
+                    break
+        if not experience_level:
+            match = _EXPERIENCE_LEVEL_RE.search(tag)
+            if match:
+                experience_level = (match.group(0) or tag).strip()
+
+    return {
+        "employment_type": employment_type,
+        "experience_level": experience_level,
+        "workplace_type": workplace_type,
+    }
+
+
+def _enrich_interested_sync_stub(
+    stub: dict[str, Any],
+    card: OpportunityCard,
+    *,
+    detail_meta: dict[str, Any],
+    tag_meta: dict[str, str],
+) -> dict[str, Any]:
+    """Merge list stub with tag + detail metadata; preserve Applied Interested semantics."""
+    out = dict(stub)
+    out["applied"] = True
+
+    for field in ("employment_type", "experience_level", "workplace_type"):
+        val = str(tag_meta.get(field) or "").strip()
+        if val:
+            out[field] = val
+
+    for field in ("title", "company", "location"):
+        detail_val = str(detail_meta.get(field) or "").strip()
+        list_val = str(out.get(field) or getattr(card, field, "") or "").strip()
+        if detail_val:
+            out[field] = detail_val
+        elif list_val:
+            out[field] = list_val
+
+    hm = str(detail_meta.get("hiring_manager") or "").strip()
+    if hm:
+        out["hiring_manager"] = hm
+
+    for field in ("posted_at_raw", "posted_at_source", "posted_at_date", "age_days"):
+        if field in detail_meta and detail_meta[field] is not None:
+            out[field] = detail_meta[field]
+
+    return out
+
+
 def _build_interested_sync_stub(card: OpportunityCard) -> dict | None:
     """Minimal list-only job dict for Phase B Interested synchronization."""
     job_id = str(card.job_id or "").strip()
@@ -2695,15 +2852,21 @@ def sync_instahyre_interested() -> tuple[list[dict], dict[str, Any]]:
     Phase B: Interested list synchronization (Instahyre only).
 
     Business rule: membership in the Interested filter = Applied.
-    List-only harvest — no detail pages, no AI, no Stage-1.
+    List harvest + optional lightweight detail enrichment; no AI, no Stage-1.
     """
     stubs: list[dict] = []
+    enrich_enabled = _interested_detail_enrich_enabled()
     stats: dict[str, Any] = {
         "phase": "interested_sync",
         "cards_harvested": 0,
         "stubs_built": 0,
         "skipped_no_job_id": 0,
         "duplicates_skipped": 0,
+        "detail_enrich_enabled": enrich_enabled,
+        "detail_attempted": 0,
+        "detail_enriched": 0,
+        "detail_open_failed": 0,
+        "detail_rejected": 0,
         "duration_sec": 0.0,
     }
     t0 = time.monotonic()
@@ -2745,6 +2908,35 @@ def sync_instahyre_interested() -> tuple[list[dict], dict[str, Any]]:
             if not stub:
                 stats["skipped_no_job_id"] = int(stats["skipped_no_job_id"]) + 1
                 continue
+
+            tag_meta = _parse_instahyre_opportunity_tags(card.tags)
+            stub = _enrich_interested_sync_stub(
+                stub, card, detail_meta={}, tag_meta=tag_meta
+            )
+
+            if enrich_enabled:
+                stats["detail_attempted"] = int(stats["detail_attempted"]) + 1
+                if _open_card_detail(
+                    page, card, settle_ms=_interested_detail_settle_ms()
+                ):
+                    detail_meta = _extract_instahyre_detail_metadata(page, card)
+                    if detail_meta:
+                        stub = _enrich_interested_sync_stub(
+                            stub, card, detail_meta=detail_meta, tag_meta=tag_meta
+                        )
+                        stats["detail_enriched"] = int(stats["detail_enriched"]) + 1
+                        hm = str(stub.get("hiring_manager") or "").strip()
+                        posted = str(stub.get("posted_at_date") or "").strip()
+                        if hm or posted:
+                            log_debug(
+                                f"[debug] interested_enriched job-{card.job_id} "
+                                f"hm={hm!r} posted_at_date={posted!r}"
+                            )
+                    else:
+                        stats["detail_rejected"] = int(stats["detail_rejected"]) + 1
+                else:
+                    stats["detail_open_failed"] = int(stats["detail_open_failed"]) + 1
+
             stubs.append(stub)
 
         stats["stubs_built"] = len(stubs)

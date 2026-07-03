@@ -12,7 +12,7 @@ import streamlit as st
 from db.read.engine import dashboard_write_enabled
 from db.services.dashboard_write import mark_job_applied
 from display_text import is_valid_job_url, render_why_text_action
-from ui_help import help_icon_html, inject_dashboard_help_css
+from ui_help import help_icon_html, inject_dashboard_help_css, render_subheader_with_help
 from recommended_actions import RecommendedAction, compute_recommended_actions
 from recommended_actions_config import (
     APPLY_ACTION_QUEUES,
@@ -566,5 +566,9 @@ def render_recommended_actions_section(
     reference_date=None,
 ) -> None:
     st.markdown("---")
-    st.subheader(RECOMMENDED_ACTIONS_TITLE)
+    render_subheader_with_help(
+        RECOMMENDED_ACTIONS_TITLE,
+        "Rule-based job queues for what to apply to next.",
+        "Each job appears in at most one queue. Sidebar filters do not affect queue membership.",
+    )
     render_recommended_actions(dashboard_df, reference_date=reference_date)

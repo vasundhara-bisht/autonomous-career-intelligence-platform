@@ -1,4 +1,4 @@
-"""Config resolution for LinkedIn priority anchor (qualification landing URL)."""
+"""Config resolution for LinkedIn priority anchor (qualification navigation)."""
 
 from __future__ import annotations
 
@@ -18,32 +18,30 @@ from scraper.linkedin_query_orchestrator import (  # noqa: E402
     resolve_query_url,
 )
 
-_EXPECTED_LANDING = (
-    "https://www.linkedin.com/jobs/search-results/"
-    "?currentJobId=PLACEHOLDER_JOB_001&showHowYouFit=HOW_YOU_FIT"
-    "&keywords=Product%20Manager&origin=QUALIFICATION_LANDING"
-    "&originToLandingJobPostings=PLACEHOLDER_JOB_001%2CPLACEHOLDER_JOB_002%2CPLACEHOLDER_JOB_003"
-    "&geoId=90009633"
-)
-_STALE_JOB_ID = "PLACEHOLDER_JOB_STALE"
+_EXPECTED_ENTRY_URL = "https://www.linkedin.com/jobs/"
 
 
 class TopApplicantsAnchorUrlTests(unittest.TestCase):
-    def test_json_landing_url(self) -> None:
+    def test_json_navigation_config(self) -> None:
         cfg_path = _REPO_ROOT / "config" / "linkedin_queries.json"
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         anchor = next(
             q for q in cfg["queries"] if q["id"] == "top_applicants_anchor"
         )
-        self.assertEqual(anchor["landing_url"], _EXPECTED_LANDING)
-        self.assertNotIn(_STALE_JOB_ID, anchor["landing_url"])
+        nav = anchor.get("navigation") or {}
+        self.assertEqual(nav.get("entry_url"), _EXPECTED_ENTRY_URL)
+        self.assertEqual(nav.get("keywords"), "Product Manager")
+        self.assertEqual(nav.get("geo_id"), "90009633")
+        self.assertEqual(anchor.get("landing_url"), "")
+        self.assertNotIn("currentJobId", json.dumps(anchor))
 
     def test_resolve_query_url_from_catalog(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("LINKEDIN_QUALIFICATION_LANDING_URL", None)
             cfg, catalog = load_query_catalog()
             anchor = next(q for q in catalog if q.id == "top_applicants_anchor")
-            self.assertEqual(anchor.url, _EXPECTED_LANDING)
+            self.assertEqual(anchor.url, _EXPECTED_ENTRY_URL)
+            self.assertIsNotNone(anchor.navigation)
             self.assertEqual(
                 str(cfg["defaults"]["priority_anchor"]["query_id"]),
                 "top_applicants_anchor",

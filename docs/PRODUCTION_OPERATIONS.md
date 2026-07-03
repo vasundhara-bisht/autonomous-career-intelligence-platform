@@ -39,7 +39,7 @@ Optional: `./scripts/archive_state.sh --compress`
 
 ### 2.2 Stop running processes
 
-Stop any in-flight `python main.py` and `streamlit run dashboard/app.py`.
+Stop any in-flight `python main.py` and `./scripts/run_dashboard.sh` (or `streamlit run dashboard/app.py`).
 
 ### 2.3 Preview bootstrap reset
 
@@ -107,7 +107,7 @@ python scripts/validate_sqlite_parity.py --mode source-of-truth --fail-on-error
 ### 2.8 Dashboard smoke
 
 ```bash
-streamlit run dashboard/app.py
+./scripts/run_dashboard.sh
 ```
 
 Default D8B: SQLite read/write on. Confirm sidebar indicates SQLite data source; edit a pipeline stage and CRM field; refresh — changes persist in DB.
@@ -115,7 +115,7 @@ Default D8B: SQLite read/write on. Confirm sidebar indicates SQLite data source;
 **Dashboard verification checklist:**
 
 1. Header shows **Last acquisition refresh** with a formatted timestamp.
-2. KPI row: **Total Jobs**, **Latest Acquisition**, **Total Recruiters** — Total Jobs matches visible cohort (active + user-managed stages).
+2. KPI row: **Total Jobs**, **Latest Acquisition**, **Total Recruiters** — Total Jobs uses listing-status visibility cohort (`open` + `closed` visible; `removed` hidden).
 3. **Job Search Progression** section shows Discovery → Application → Outcomes stage cards.
 4. Change sidebar **Location** or **Status** — Job Listings row count changes; Job Search Progression and Source Distribution **unchanged**.
 5. Raise **Minimum score** — low/unscored `New` jobs disappear from table; Applied+ stages remain; progression counts unchanged.
@@ -125,6 +125,29 @@ Default D8B: SQLite read/write on. Confirm sidebar indicates SQLite data source;
 9. Scrollable queue panels render (Streamlit ≥ 1.30); per-queue initial caps **8 / 10 / 12 / 10**; **Load More** adds 25 when `visible < total`; caption **Showing X of Y jobs** (caption left, Load More right); panel height shrinks for small queues (dynamic height, max 360px).
 10. **Needs Review help icon** — info icon beside header shows tooltip (`14+ days old • Decide or clear`); **Job Listings** section title has HM enrichment help icon; sidebar **Source** filter and Source Distribution chart show human-readable source labels (LinkedIn, InstaHyre, etc.).
 11. **Applied ✓ smoke (3A.1)** — With `SQLITE_DASHBOARD_WRITE=1`, click Applied ✓ on a High Confidence or Apply Today card; toast appears; job disappears from that queue; apply-queue count decrements; same job shows **Applied** in Job Listings. With writes off, Applied ✓ is disabled.
+12. **Listing visibility (TD10)** — **Listing** and **Age** columns in Job Listings; `open` and `closed` jobs visible (all stages); `removed` hidden; Recommended Actions exclude non-`open`. No feature flag required.
+
+<p align="center">
+  <img src="../diagrams/dashboard-job-listings-listing-status.png" alt="Job Listings with Listing and Age columns; open and closed jobs visible" width="720" />
+</p>
+
+13. **Operational Controls** — Acquisition and Lifecycle Monitor cards show scheduler status, next run, Pause/Resume/Run now; Refresh AI Evaluations card shows last run summary and Run now. With `SQLITE_DASHBOARD_WRITE=0`, actions are disabled and view-only banner appears.
+
+<p align="center">
+  <img src="../diagrams/dashboard-operator-controls.png" alt="Operational Controls section with Acquisition, Lifecycle Monitor, and Refresh AI Evaluations cards" width="720" />
+</p>
+
+14. **Acquisition Health** — summary KPI row (latest completed run) plus acquisition run history table from `acquisition_runs` + aggregated `job_observations` / `acquisition_query_runs`.
+
+15. **Operational Monitor Health** — summary KPI row (latest completed run) plus monitoring run history table from `lifecycle_monitor_runs`; **Last Monitoring Refresh** caption populated after a completed monitor run.
+
+16. **AI Refresh Health** — two-row KPI layout (row 1: Health + Last Preset; row 2: Jobs Scored, Last Run Duration, Last Run Cohort, Last Run Eligible, Batch Failures); history columns: Cohort, Eligible, Scored, Persist Skipped, No Description, Status — **no cap-skipped KPI or column**.
+
+<p align="center">
+  <img src="../diagrams/dashboard-ai-refresh-health.png" alt="AI Refresh Health two-row KPIs and run history" width="720" />
+</p>
+
+17. **Refresh AI Evaluations dialog** — preset picker; cohort preview shows cohort matched, eligible (with description), estimated batches (no scoring-cap language).
 
 **Unit test smoke:**
 
@@ -140,6 +163,8 @@ python -m unittest \
   tests.test_display_text \
   tests.test_source_display \
   tests.test_dashboard_refresh_label \
+  tests.test_ai_refresh_ui \
+  tests.test_operator_controls_ui \
   -v
 ```
 
@@ -164,15 +189,15 @@ python -m unittest tests.test_recruiter_enrichment tests.test_dashboard_job_hiri
 
 ## 3. Daily production workflow
 
-Intended cadence: **twice-daily automated acquisition** (10:00 and 21:00 IST) + **manual** Streamlit dashboard review. Scheduling is implemented via macOS `launchd` — see [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md). Other schedulers can invoke the same wrapper script (`scripts/scheduling/run_scheduled_acquisition.sh`).
+Intended cadence: **twice-daily automated acquisition** (09:00 and 21:00 IST), **once-daily lifecycle monitor** (**17:00 IST**), plus **manual** Streamlit dashboard review. Scheduling is implemented via macOS `launchd` — see [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md) and SCHEDULER_SETUP.md.
 
 ### 3.0 Scheduled automation (macOS)
 
-**Cadence:** acquisition + parity at **10:00** and **21:00** IST daily; optional backup Sunday **23:00**. Overlapping runs skip when the file lock is held (`/tmp/ai-job-agent-acquisition.lock`).
+**Cadence:** acquisition + parity at **09:00** and **21:00** IST daily; lifecycle monitor at **17:00 IST once daily**; optional backup Sunday **23:00**. Overlapping runs skip when the file lock is held (`/tmp/ai-job-agent-acquisition.lock` or `/tmp/ai-job-agent-lifecycle-monitor.lock`).
 
 **Install, plist labels, log paths, manual test, uninstall:** [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md) (canonical).
 
-**Not scheduled:** Streamlit — use §3.4 manually.
+**Not scheduled:** Streamlit — use §3.4 manually. **AI refresh (v1):** manual or dashboard Operator Controls only — not launchd; see §5.
 
 Manual acquisition (§3.2–3.3) is equivalent when LaunchAgents are not installed.
 
@@ -186,8 +211,7 @@ Manual acquisition (§3.2–3.3) is equivalent when LaunchAgents are not install
 - `export OPENAI_API_KEY="..."`
 - LinkedIn cap: `LINKEDIN_MAX_RUNS=3` (or omit for code default of 5)
 - Edit scoring identity if needed: [`config/profiles/ai_candidate_profile.example.md`](../config/profiles/ai_candidate_profile.example.md) (see [config/profiles/README.md](../config/profiles/README.md))
-- Optional: `DEBUG_LIMIT=300` (default in code; override via env)
-- LinkedIn Top Applicant anchor: `unset LINKEDIN_QUALIFICATION_LANDING_URL` so [`config/linkedin_queries.json`](../config/linkedin_queries.json) `top_applicants_anchor.landing_url` is used (refresh that URL when the feed drifts)
+- LinkedIn Top Applicant anchor: `unset LINKEDIN_QUALIFICATION_LANDING_URL` so navigation config in [`config/linkedin_queries.json`](../config/linkedin_queries.json) `top_applicants_anchor.navigation` is used (no manual URL refresh)
 
 ### 3.2 Run acquisition (default flags)
 
@@ -222,10 +246,12 @@ Legacy strict CSV mirror check (optional): `python scripts/validate_sqlite_parit
 ### 3.4 Dashboard review
 
 ```bash
-streamlit run dashboard/app.py
+./scripts/run_dashboard.sh
 ```
 
 Review ranked jobs, historical memory, recruiter CRM, pipeline stages, Job Search Progression, four-queue Recommended Actions (Applied ✓ on apply queues), and source distribution. Use the dashboard verification checklist in §2.8.
+
+Use the canonical launcher `./scripts/run_dashboard.sh` — bare `streamlit run` does not load `.env`.
 
 **Interested sync + routing unit tests** (optional, after Instahyre runs):
 
@@ -248,6 +274,26 @@ python scripts/validate_sqlite_parity.py --mode source-of-truth --fail-on-error
 
 Optional automation: `scripts/scheduling/run_scheduled_backup.sh` via LaunchAgent (Sunday 23:00) — [SCHEDULER_SETUP.md](./SCHEDULER_SETUP.md).
 
+### 3.6 Data repair rituals (optional, on-demand)
+
+Run only when you have a concrete cohort gap (stale `posted_at_date`, sentinel HM, inactive flags). **Not** part of the daily cadence.
+
+**Before any `--apply`:**
+
+1. Archive + export: `./scripts/archive_state.sh` and `python scripts/export_csv_memory.py --all` (§3.5).
+2. Avoid overlapping acquisition — wait for scheduled run to finish or confirm file lock is free (`/tmp/ai-job-agent-acquisition.lock`).
+3. Dry-run first; review manifest/output; then `--apply` or `--apply-from-manifest` per script.
+
+| Need | Script | PCR reference |
+|------|--------|---------------|
+| Anchor `posted_at_date` backfill | `scripts/backfill_posted_at_date.py` | [§8 posted date tooling](./PROJECT_COMMAND_REFERENCE.md) |
+| Playwright `time_posted` re-scrape | `scripts/backfill_linkedin_posted_dates.py` | same |
+| HM extract validation | `scripts/probe_linkedin_hiring_manager.py` | [§8 HM operator tooling](./PROJECT_COMMAND_REFERENCE.md) |
+| HM backfill (no recruiter link) | `scripts/backfill_linkedin_hiring_managers.py` | Task C |
+| HM overwrite repair (one link) | `scripts/repair_linkedin_hm_overwrite_cohort.py` | Task E |
+
+After apply: `python scripts/validate_sqlite_parity.py --mode production --fail-on-error`. Unit test one-liners: [PROJECT_COMMAND_REFERENCE.md §10b](./PROJECT_COMMAND_REFERENCE.md#10b-sqlite-command-table).
+
 ---
 
 ## 4. Emergency rollback
@@ -259,7 +305,7 @@ Optional automation: `scripts/scheduling/run_scheduled_backup.sh` via LaunchAgen
 | **L2** | Git revert D8B default-flag commit |
 | **L3** | Archive → bootstrap reset → import from archive |
 
-Rollback levels documented in [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md) (D8B); live procedure: this section + §2.
+Rollback levels aligned with PRODUCTION_OPERATIONS.md evidence archive; live procedure: this section + §2.
 
 ---
 
@@ -270,9 +316,27 @@ Rollback levels documented in [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENT
 | Candidate profile | `config/profiles/ai_candidate_profile.example.md` | Preferences and signals only; not the scorer instruction block |
 | Profile override | `AI_CANDIDATE_PROFILE_PATH` | Absolute or repo-relative path |
 | Scoring rules / prompt | `src/agent/ai_batch_scorer.py` | Unchanged by profile file; edit only when changing evaluation criteria |
-| `DEBUG_LIMIT` | `src/agent/ai_runtime_config.py` or env | Default **300** jobs scored per run |
-| `BATCH_SIZE` | `src/agent/ai_runtime_config.py` or env | Default **15**; override e.g. `BATCH_SIZE=20` |
+| `BATCH_SIZE` | `src/agent/ai_runtime_config.py` or env | Default **20**; override e.g. `BATCH_SIZE=25` |
 | Description cap | `AI_DESCRIPTION_MAX_CHARS` in `ai_batch_scorer.py` | Default **3000** chars per job in prompt |
+
+### 5.1 Refresh AI Evaluations (re-score without scrape)
+
+Use when the candidate profile changes and you want updated fit scores on jobs that already have stored descriptions — **no re-scrape, no description fetch**.
+
+| Trigger | Command / UI |
+|---------|----------------|
+| Dashboard (recommended) | Operator Controls → **Refresh AI Evaluations** → choose preset → confirm **Run now** (`SQLITE_DASHBOARD_WRITE=1`) |
+| CLI — profile refresh on open `New` | `python scripts/run_ai_refresh.py --preset discovery` |
+| CLI — scoring backlog | `python scripts/run_ai_refresh.py --preset backlog` |
+| Preview cohort / cost | `python scripts/run_ai_refresh.py --preset discovery --dry-run` |
+
+**Presets:** `discovery` (Refresh Evaluations) re-scores open `New` jobs including already-`scored` rows; `backlog` (Refresh Scoring Backlog) drains `pending` / `skipped_by_cap` / incomplete scored on discovery stages (`New`/`Saved`).
+
+**Cost:** Scores all eligible jobs in the selected cohort per run. Dashboard confirmation shows **cohort matched**, **eligible (with description)**, and **estimated batches**. Deferral: refresh skips when `/tmp/ai-job-agent-acquisition.lock` is held.
+
+**Persistence:** Appends new `ai_evaluations` rows (`model=ai_refresh`); `latest_ai_evaluations_view` picks the newest evaluation. Does **not** call acquisition dual-write or change `jobs` rows directly. Run audit: `ai_refresh_runs` table; dashboard **AI Refresh Health** section — see [PROJECT_COMMAND_REFERENCE.md §8 AI Refresh Health](./PROJECT_COMMAND_REFERENCE.md#ai-refresh-health).
+
+**Requirements:** `OPENAI_API_KEY`. Logs under `logs/scheduled/ai-refresh-*.log`. Full command reference: [PROJECT_COMMAND_REFERENCE.md](./PROJECT_COMMAND_REFERENCE.md) §10 (AI refresh).
 
 ---
 
@@ -286,4 +350,4 @@ Read-only references for promotion validation:
 | D8B post-flip run | `logs/d8b-post-flip-run-20260603-134740.log` |
 | D8B SOT validator | `logs/d8b-post-flip-sot-20260603-134753.log` |
 | Flag remediation | `logs/d8b-remediation-post-flip-run-20260603-142154.log` |
-| D8B migration | Complete — see [SQLITE_IMPLEMENTATION_PLAN.md](./SQLITE_IMPLEMENTATION_PLAN.md) |
+| D8B sign-off 

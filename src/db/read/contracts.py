@@ -63,7 +63,6 @@ HISTORICAL_VIEW_COLUMNS: tuple[str, ...] = (
     "first_seen",
     "last_seen",
     "times_seen",
-    "currently_active",
     "applied",
     "rejected",
     "interview",
@@ -72,6 +71,14 @@ HISTORICAL_VIEW_COLUMNS: tuple[str, ...] = (
     "posted_at_date",
     "age_days",
     "pipeline_stage",
+    "listing_status",
+    "listing_status_reason",
+    "listing_checked_at",
+    "listing_check_attempted_at",
+    "listing_closed_at",
+    "listing_removed_at",
+    "consecutive_check_failures",
+    "listing_check_paused_at",
 )
 
 HISTORICAL_SHADOW_COMPARE_COLUMNS: tuple[str, ...] = (

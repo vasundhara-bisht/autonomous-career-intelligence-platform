@@ -636,3 +636,110 @@ def _extend(section: ParitySections, other: ParitySections) -> ParitySections:
 
 
 ParitySections.extend = _extend  # type: ignore[method-assign]
+
+
+@dataclass
+class ListingLifecycleParityReport:
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def warning_count(self) -> int:
+        return len(self.warnings)
+
+    def summary_text(self) -> str:
+        if not self.warnings:
+            return "none"
+        preview = "; ".join(self.warnings[:3])
+        if len(self.warnings) > 3:
+            preview += f"; ... (+{len(self.warnings) - 3} more)"
+        return preview
+
+
+def check_listing_lifecycle_parity(
+    session: Session,
+    *,
+    run_id: int | None = None,
+) -> ListingLifecycleParityReport:
+    """
+    TD9 listing lifecycle parity — warning-only diagnostics.
+
+    Never populates failures[]; Scheduler B must not treat findings as hard errors.
+    """
+    from db.models.schema import LifecycleMonitorRun
+    from db.listing_status import (
+        MONITOR_RUN_STATUS_COMPLETED,
+        MONITOR_RUN_STATUS_SKIPPED_BUDGET_EXHAUSTED,
+    )
+    from db.services.lifecycle_cohort import count_monitor_candidates
+
+    report = ListingLifecycleParityReport()
+
+    null_status_count = session.execute(
+        select(func.count())
+        .select_from(Job)
+        .where((Job.listing_status.is_(None)) | (Job.listing_status == ""))
+    ).scalar_one()
+    if int(null_status_count or 0) > 0:
+        report.warnings.append(
+            f"listing_status NULL/empty on {int(null_status_count)} job row(s)"
+        )
+
+    illegal_closed_reopen = session.execute(
+        select(func.count())
+        .select_from(Job)
+        .where(
+            Job.listing_status == "open",
+            Job.listing_closed_at.is_not(None),
+        )
+    ).scalar_one()
+    if int(illegal_closed_reopen or 0) > 0:
+        report.warnings.append(
+            f"illegal closed→open: {int(illegal_closed_reopen)} job(s) "
+            "listing_status=open with listing_closed_at set"
+        )
+
+    illegal_removed_reopen = session.execute(
+        select(func.count())
+        .select_from(Job)
+        .where(
+            Job.listing_status == "open",
+            Job.listing_removed_at.is_not(None),
+        )
+    ).scalar_one()
+    if int(illegal_removed_reopen or 0) > 0:
+        report.warnings.append(
+            f"illegal removed→open: {int(illegal_removed_reopen)} job(s) "
+            "listing_status=open with listing_removed_at set"
+        )
+
+    if run_id is not None:
+        run = session.get(LifecycleMonitorRun, int(run_id))
+        if run is not None:
+            cohort_size = int(run.cohort_size or 0)
+            checked_count = int(run.checked_count or 0)
+            if cohort_size > 0 and checked_count < cohort_size:
+                report.warnings.append(
+                    f"cohort completeness gap for run_id={run_id}: "
+                    f"checked_count={checked_count} < cohort_size={cohort_size} "
+                    f"(status={run.status})"
+                )
+            if run.status in {"interrupted", "failed"} and checked_count > 0:
+                report.warnings.append(
+                    f"partial monitor run run_id={run_id}: status={run.status} "
+                    f"checked_count={checked_count}"
+                )
+
+    candidate_count = count_monitor_candidates(session)
+    if run_id is not None:
+        run = session.get(LifecycleMonitorRun, int(run_id))
+        if run is not None and run.status in {
+            MONITOR_RUN_STATUS_COMPLETED,
+            MONITOR_RUN_STATUS_SKIPPED_BUDGET_EXHAUSTED,
+        }:
+            if candidate_count > 0 and int(run.checked_count or 0) == 0:
+                report.warnings.append(
+                    f"{run.status} run_id={run_id} checked_count=0 with "
+                    f"{candidate_count} current monitor candidate(s)"
+                )
+
+    return report

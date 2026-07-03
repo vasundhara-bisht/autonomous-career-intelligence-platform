@@ -31,6 +31,13 @@ class AcquisitionRefreshLabelTests(unittest.TestCase):
         label = _format_refresh_label(local_ts)
         self.assertEqual(label, "07 Jun 2026 · 09:50 PM")
 
+    def test_refresh_labels_row_markup_and_layout(self) -> None:
+        ui_source = (_REPO_ROOT / "dashboard" / "ui_help.py").read_text(encoding="utf-8")
+        app_source = (_REPO_ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("dash-refresh-labels", ui_source)
+        self.assertIn("flex-wrap: wrap", ui_source)
+        self.assertIn("render_refresh_labels_row(_last_refresh_label", app_source)
+
     def test_jobs_csv_mtime_path_uses_local_timestamp_unchanged(self) -> None:
         from app import _format_refresh_label
 
@@ -39,3 +46,36 @@ class AcquisitionRefreshLabelTests(unittest.TestCase):
             _format_refresh_label(local_ts),
             "07 Jun 2026 · 09:50 PM",
         )
+
+    def test_monitoring_refresh_label_from_lifecycle_run(self) -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from app import load_last_monitoring_refresh_label
+
+        class _FakeSession:
+            def __enter__(self):
+                return object()
+
+            def __exit__(self, *args):
+                return False
+
+        load_last_monitoring_refresh_label.clear()
+        ist = ZoneInfo("Asia/Kolkata")
+        with patch("db.read.engine.get_dashboard_read_session", return_value=_FakeSession()):
+            with patch(
+                "db.read.monitor_runs.load_latest_productive_monitor_run_info",
+                return_value={"completed_at": "2026-06-07 16:20:47.781217"},
+            ):
+                with patch("db.bootstrap.ensure_database_ready"):
+                    with patch("app.datetime") as mock_datetime:
+                        mock_datetime.now.return_value = datetime(
+                            2026, 6, 7, 22, 0, tzinfo=ist
+                        )
+                        label = load_last_monitoring_refresh_label(True, 1.0)
+        self.assertEqual(label, "07 Jun 2026 · 09:50 PM")
+
+    def test_monitoring_refresh_unknown_without_sqlite(self) -> None:
+        from app import load_last_monitoring_refresh_label
+
+        self.assertEqual(load_last_monitoring_refresh_label(False, 0.0), "Unknown")

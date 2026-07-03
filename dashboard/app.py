@@ -12,13 +12,13 @@ from db.services.dashboard_write import (
 )
 from data_flow import (
     SidebarFilterState,
-    apply_activity_visibility,
     apply_discovery_score_filter,
     apply_sidebar_filters,
     build_dashboard_df,
     is_user_managed_stage,
     sort_for_table,
 )
+from date_display import format_dashboard_date
 from funnel import compute_progression_funnel_counts
 from funnel_workflow import (
     JOB_SEARCH_PROGRESSION_TITLE,
@@ -31,16 +31,35 @@ from recruiter_workflow import (
     render_recruiter_relationship_progression_workflow,
 )
 from recommended_actions_ui import render_recommended_actions_section
+from outreach_ui import render_outreach_intelligence_section
+from acquisition_ui import render_acquisition_health_section
+from ai_refresh_ui import render_ai_refresh_health_section
+from monitor_ui import render_operational_monitor_health_section
+from operator_controls_ui import render_operational_controls_section
 from source_display import source_display_name
-from ui_help import inject_dashboard_help_css, render_subheader_with_help
+from ui_help import inject_dashboard_help_css, render_refresh_labels_row, render_section_heading, render_subheader_with_help, render_subsection_heading
 from loaders import (
     get_loader_diagnostics,
     load_dashboard_historical_df,
     load_dashboard_jobs_df,
+    load_outreach_df,
     load_recruiter_crm_df,
     reset_loader_diagnostics,
 )
+from listing_visibility import (
+    apply_listing_visibility,
+    format_age_chip,
+    format_listing_badge_row,
+)
 from job_editor import job_editor_return_differs_input
+from job_listings_editor import (
+    CLOSED_LISTING_READONLY_HELP,
+    CLOSED_LISTINGS_SECTION_TITLE,
+    closed_listings_readonly_column_config,
+    filter_persisted_job_states,
+    partition_editor_df_by_listing,
+    style_closed_listings_display_df,
+)
 
 paths.migrate_legacy_root_runtime_files()
 
@@ -63,7 +82,7 @@ DATE_RANGE_PRESETS = ("All time", "Last 7 days", "Last 30 days", "Custom")
 
 # Re-export for tests and backward compatibility.
 _is_user_managed_stage = is_user_managed_stage
-_apply_activity_visibility = apply_activity_visibility
+_apply_listing_visibility = apply_listing_visibility
 _apply_discovery_score_filter = apply_discovery_score_filter
 
 
@@ -184,6 +203,32 @@ def load_last_data_refresh_label(
     return "Unknown"
 
 
+@st.cache_data
+def load_last_monitoring_refresh_label(use_sqlite: bool, db_mtime: float) -> str:
+    """Last successful lifecycle monitor refresh (independent of listing UI flag)."""
+    if not use_sqlite:
+        return "Unknown"
+    try:
+        from db.bootstrap import ensure_database_ready
+        from db.read.engine import get_dashboard_read_session
+        from db.read.monitor_runs import load_latest_productive_monitor_run_info
+
+        ensure_database_ready()
+        with get_dashboard_read_session() as session:
+            run_info = load_latest_productive_monitor_run_info(session)
+        if run_info and run_info.get("completed_at"):
+            ts = pd.to_datetime(run_info["completed_at"], errors="coerce")
+            if pd.notna(ts):
+                return _format_refresh_label(_acquisition_completed_at_to_local(ts))
+    except Exception:
+        pass
+    return "Unknown"
+
+
+def _format_posted_for_display(value: object) -> str:
+    return format_dashboard_date(value)
+
+
 def _build_editor_df(
     filtered_df: pd.DataFrame, historical_state_df: pd.DataFrame
 ) -> pd.DataFrame:
@@ -251,12 +296,22 @@ def _build_editor_df(
         axis=1,
     )
     editor_df["reason"] = editor_df["reason"].astype(str).str.slice(0, 120)
+    if "posted_at_date" in editor_df.columns:
+        editor_df["Posted"] = editor_df["posted_at_date"].map(_format_posted_for_display)
+    else:
+        editor_df["Posted"] = ""
+    editor_df["Listing"] = display_df.apply(format_listing_badge_row, axis=1)
+    if "listing_status" in display_df.columns:
+        editor_df["listing_status"] = display_df["listing_status"]
+    if "age_bucket" in display_df.columns:
+        editor_df["Age"] = display_df["age_bucket"].map(format_age_chip)
+    else:
+        editor_df["Age"] = ""
     editor_df = editor_df.rename(
         columns={
             "title": "Title",
             "company": "Company",
             "location": "Location",
-            "time_posted": "Posted",
             "hiring_manager": "Hiring Manager",
             "ai_score_display": "AI Score",
             "reason": "Reason",
@@ -286,6 +341,8 @@ def _build_editor_df(
     ]
     if "JOB_KEY_V2" in editor_df.columns:
         _editor_cols.insert(2, "JOB_KEY_V2")
+    _editor_cols.insert(_editor_cols.index("Posted") + 1, "Listing")
+    _editor_cols.insert(_editor_cols.index("Listing") + 1, "Age")
     return editor_df[[c for c in _editor_cols if c in editor_df.columns]]
 
 
@@ -295,7 +352,7 @@ def _render_recommended_actions(dashboard_df: pd.DataFrame) -> None:
 
 def _render_job_search_progression(dashboard_df: pd.DataFrame) -> None:
     st.markdown("---")
-    st.subheader(JOB_SEARCH_PROGRESSION_TITLE)
+    render_section_heading(JOB_SEARCH_PROGRESSION_TITLE)
 
     if dashboard_df.empty:
         st.caption("No visible jobs in the dashboard cohort.")
@@ -306,7 +363,7 @@ def _render_job_search_progression(dashboard_df: pd.DataFrame) -> None:
 
 
 def _render_recruiter_relationship_progression(recruiter_crm_df: pd.DataFrame) -> None:
-    st.markdown(f"#### {RECRUITER_RELATIONSHIP_PROGRESSION_TITLE}")
+    render_subsection_heading(RECRUITER_RELATIONSHIP_PROGRESSION_TITLE)
 
     if recruiter_crm_df.empty:
         st.caption("No recruiters in the CRM cohort.")
@@ -318,7 +375,7 @@ def _render_recruiter_relationship_progression(recruiter_crm_df: pd.DataFrame) -
 
 def _render_pipeline_analytics(editor_df: pd.DataFrame) -> None:
     st.markdown("---")
-    with st.expander("Pipeline analytics", expanded=False):
+    with st.expander("PIPELINE ANALYTICS", expanded=False):
         pipeline_counts = editor_df["Status"].value_counts()
         total_applied = int(pipeline_counts.get("Applied", 0))
         total_interviews = int(
@@ -384,7 +441,7 @@ def _render_pipeline_analytics(editor_df: pd.DataFrame) -> None:
             ]
         ]
 
-        st.subheader("Source Effectiveness")
+        st.subheader("SOURCE EFFECTIVENESS")
         st.dataframe(source_summary_df, width="stretch", hide_index=True)
 
 
@@ -413,6 +470,7 @@ historical_state_df = load_historical_state(
     _use_sqlite, _jobs_mtime, _db_mtime, _hist_mtime
 )
 recruiter_crm_df = load_recruiter_crm_df()
+outreach_df = load_outreach_df()
 
 historical_state_df = _normalize_historical_state(historical_state_df)
 
@@ -440,11 +498,16 @@ else:
 
 date_field_label = st.sidebar.radio(
     "Date field",
-    ["Last Seen", "First Seen"],
+    ["Posted", "Last Seen", "First Seen"],
     index=0,
     horizontal=True,
 )
-date_column = "last_seen" if date_field_label == "Last Seen" else "first_seen"
+if date_field_label == "Posted":
+    date_column = "posted_at_date"
+elif date_field_label == "Last Seen":
+    date_column = "last_seen"
+else:
+    date_column = "first_seen"
 
 date_preset = st.sidebar.selectbox("Date range", DATE_RANGE_PRESETS, index=0)
 custom_start = custom_end = None
@@ -505,6 +568,7 @@ editor_df = _build_editor_df(filtered_df, historical_state_df)
 _last_refresh_label = load_last_data_refresh_label(
     _use_sqlite, _db_mtime, _jobs_mtime
 )
+_last_monitoring_label = load_last_monitoring_refresh_label(_use_sqlite, _db_mtime)
 
 if "applied_jobs" not in st.session_state:
     st.session_state.applied_jobs = set()
@@ -514,7 +578,7 @@ if "applied_jobs" not in st.session_state:
 # =========================
 inject_dashboard_help_css()
 st.title(PRODUCT_TITLE)
-st.caption(f"Last acquisition refresh: {_last_refresh_label}")
+render_refresh_labels_row(_last_refresh_label, _last_monitoring_label)
 
 col1, col2, col3 = st.columns(3)
 col1.metric("Total Jobs", len(dashboard_df))
@@ -527,15 +591,10 @@ col3.metric("Total Recruiters", len(recruiter_crm_df))
 _render_recommended_actions(dashboard_df)
 
 # =========================
-# JOB SEARCH PROGRESSION
-# =========================
-_render_job_search_progression(dashboard_df)
-
-# =========================
 # SOURCE DISTRIBUTION
 # =========================
 st.markdown("---")
-st.subheader("Source Distribution")
+render_section_heading("Source Distribution")
 
 if dashboard_df.empty:
     st.caption("No visible jobs in the dashboard cohort.")
@@ -572,6 +631,11 @@ else:
 _render_pipeline_analytics(dashboard_editor_df)
 
 # =========================
+# JOB SEARCH PROGRESSION
+# =========================
+_render_job_search_progression(dashboard_df)
+
+# =========================
 # JOB LISTINGS
 # =========================
 st.markdown("---")
@@ -592,66 +656,118 @@ if _filtered_count < _table_base_count:
 if "stable_editor_df" not in st.session_state:
     st.session_state.stable_editor_df = editor_df.copy()
 
-edited_df = st.data_editor(
-    editor_df,
-    key="job_table_editor",
-    num_rows="fixed",
-    width="stretch",
-    height=600,
-    hide_index=True,
-    column_order=[
-        "#",
-        "Title",
-        "Company",
-        "Location",
-        "Posted",
-        "Hiring Manager",
-        "AI Score",
-        "Reason",
-        "Source",
-        "Link",
+_job_column_order = [
+    "#",
+    "Title",
+    "Company",
+    "Location",
+    "Posted",
+    "Hiring Manager",
+    "AI Score",
+    "Reason",
+    "Source",
+    "Link",
+    "Status",
+    "Notes",
+]
+_job_column_config = {
+    "JOB_KEY": None,
+    "JOB_KEY_V2": None,
+    "source_key": None,
+    "#": st.column_config.NumberColumn("#", width="small", disabled=True),
+    "Title": st.column_config.TextColumn("Title", width="large"),
+    "Company": st.column_config.TextColumn("Company", width="medium"),
+    "Location": st.column_config.TextColumn("Location", width="medium"),
+    "Hiring Manager": st.column_config.TextColumn(
+        "Hiring Manager", width="medium"
+    ),
+    "Posted": st.column_config.TextColumn("Posted", width="small"),
+    "AI Score": st.column_config.TextColumn("AI Score", width="small"),
+    "Reason": st.column_config.TextColumn("Reason", width="medium"),
+    "Source": st.column_config.TextColumn("Source", width="small"),
+    "Link": st.column_config.LinkColumn("Link", width="medium"),
+    "Status": st.column_config.SelectboxColumn(
         "Status",
-        "Notes",
-    ],
-    column_config={
-        "JOB_KEY": None,
-        "JOB_KEY_V2": None,
-        "source_key": None,
-        "#": st.column_config.NumberColumn("#", width="small", disabled=True),
-        "Title": st.column_config.TextColumn("Title", width="large"),
-        "Company": st.column_config.TextColumn("Company", width="medium"),
-        "Location": st.column_config.TextColumn("Location", width="medium"),
-        "Hiring Manager": st.column_config.TextColumn(
-            "Hiring Manager", width="medium"
-        ),
-        "Posted": st.column_config.TextColumn("Posted", width="small"),
-        "AI Score": st.column_config.TextColumn("AI Score", width="small"),
-        "Reason": st.column_config.TextColumn("Reason", width="medium"),
-        "Source": st.column_config.TextColumn("Source", width="small"),
-        "Link": st.column_config.LinkColumn("Link", width="medium"),
-        "Status": st.column_config.SelectboxColumn(
-            "Status",
-            options=PIPELINE_STAGES,
-            width="medium",
-        ),
-        "Notes": st.column_config.TextColumn("Notes", width="large"),
-    },
-    disabled=[
-        "#",
-        "Title",
-        "Company",
-        "Location",
-        "Posted",
-        "AI Score",
-        "Source",
-        "Link",
-    ],
+        options=PIPELINE_STAGES,
+        width="medium",
+    ),
+    "Notes": st.column_config.TextColumn("Notes", width="large"),
+}
+_job_disabled_columns = [
+    "#",
+    "Title",
+    "Company",
+    "Location",
+    "Posted",
+    "AI Score",
+    "Source",
+    "Link",
+]
+_job_column_order.insert(_job_column_order.index("Posted") + 1, "Listing")
+_job_column_order.insert(_job_column_order.index("Listing") + 1, "Age")
+_job_column_config["Listing"] = st.column_config.TextColumn(
+    "Listing",
+    width="small",
+    disabled=True,
+)
+_job_column_config["Age"] = st.column_config.TextColumn(
+    "Age", width="small", disabled=True
+)
+_job_column_config["listing_status"] = None
+_job_disabled_columns.extend(["Listing", "Age", "listing_status"])
+
+_open_editor_df, _closed_editor_df = partition_editor_df_by_listing(
+    editor_df,
+    listing_visibility_enabled=True,
 )
 
-_job_editor_dirty = job_editor_return_differs_input(editor_df, edited_df)
+_closed_listings_column_config = closed_listings_readonly_column_config(_job_column_config)
+
+def _render_closed_listings_table(closed_df: pd.DataFrame) -> None:
+    display_columns = [col for col in _job_column_order if col in closed_df.columns]
+    st.dataframe(
+        style_closed_listings_display_df(closed_df),
+        width="stretch",
+        height=min(400, 35 * len(closed_df) + 38),
+        hide_index=True,
+        column_order=display_columns,
+        column_config=_closed_listings_column_config,
+    )
+
+
+edited_open_df = _open_editor_df.copy()
+
+if _open_editor_df.empty:
+    st.caption("No actionable job listings match the current filters.")
+else:
+    edited_open_df = st.data_editor(
+        _open_editor_df,
+        key="job_table_editor",
+        num_rows="fixed",
+        width="stretch",
+        height=600,
+        hide_index=True,
+        column_order=_job_column_order,
+        column_config=_job_column_config,
+        disabled=_job_disabled_columns,
+    )
+
+_job_editor_dirty = False
+if not _open_editor_df.empty:
+    _job_editor_dirty = job_editor_return_differs_input(_open_editor_df, edited_open_df)
+
+st.markdown("---")
+render_subheader_with_help(
+    CLOSED_LISTINGS_SECTION_TITLE,
+    CLOSED_LISTING_READONLY_HELP,
+)
+if _closed_editor_df.empty:
+    st.caption("No closed listings match the current filters.")
+else:
+    _render_closed_listings_table(_closed_editor_df)
 
 updated_states = []
-for _, row in edited_df.iterrows():
+for _, row in edited_open_df.iterrows():
     pipeline_stage = str(row["Status"]).strip()
     applied_state = pipeline_stage in [
         "Applied",
@@ -679,10 +795,19 @@ for _, row in edited_df.iterrows():
         _state["JOB_KEY_V2"] = str(row["JOB_KEY_V2"]).strip()
     updated_states.append(_state)
 
+updated_states = filter_persisted_job_states(
+    updated_states,
+    editor_df,
+    listing_visibility_enabled=True,
+)
+
 updated_df = pd.DataFrame(updated_states)
 
 if dashboard_write_enabled():
-    _job_rows_persisted = persist_dashboard_job_edits(updated_df, prior_df=editor_df)
+    _job_rows_persisted = persist_dashboard_job_edits(
+        updated_df,
+        prior_df=_open_editor_df,
+    )
     if _job_rows_persisted and _job_editor_dirty:
         st.toast("Changes saved", icon="✅")
 else:
@@ -724,9 +849,11 @@ else:
 # RECRUITER RELATIONSHIP MANAGEMENT
 # =========================
 st.markdown("---")
-st.subheader("Recruiter Relationship Management")
-
-st.metric("Total Recruiters", len(recruiter_crm_df))
+render_subheader_with_help(
+    "Recruiter Relationship Management",
+    "Track recruiter relationship stages and job connections over time.",
+    "Total Recruiters is shown in the dashboard header above.",
+)
 _render_recruiter_relationship_progression(recruiter_crm_df)
 
 display_crm_df = recruiter_crm_df.copy()
@@ -758,6 +885,8 @@ crm_editor_df = display_crm_df[
         "recruiter_stage": "Status",
     }
 )
+crm_editor_df["First Seen"] = crm_editor_df["First Seen"].map(format_dashboard_date)
+crm_editor_df["Last Seen"] = crm_editor_df["Last Seen"].map(format_dashboard_date)
 crm_editor_df["Source"] = crm_editor_df["source_key"].map(source_display_name)
 
 edited_crm_df = st.data_editor(
@@ -808,3 +937,33 @@ else:
 
 if _job_editor_dirty:
     st.rerun()
+
+# =========================
+# OUTREACH INTELLIGENCE
+# =========================
+render_outreach_intelligence_section(
+    outreach_df=outreach_df,
+    editor_df=dashboard_editor_df,
+    reference_date=date.today(),
+    write_enabled=dashboard_write_enabled(),
+)
+
+# =========================
+# OPERATIONAL CONTROLS
+# =========================
+render_operational_controls_section()
+
+# =========================
+# ACQUISITION HEALTH
+# =========================
+render_acquisition_health_section()
+
+# =========================
+# OPERATIONAL MONITOR HEALTH
+# =========================
+render_operational_monitor_health_section(dashboard_df)
+
+# =========================
+# AI REFRESH HEALTH
+# =========================
+render_ai_refresh_health_section()

@@ -8,6 +8,8 @@ from db.models.schema import (
     Job,
     JobDescription,
     JobObservation,
+    LifecycleMonitorRun,
+    OutreachAttempt,
     QueryCooldownState,
     Recruiter,
     RecruiterJobLink,
@@ -23,7 +25,9 @@ __all__ = [
     "UserJobState",
     "Recruiter",
     "RecruiterJobLink",
+    "OutreachAttempt",
     "AcquisitionRun",
     "AcquisitionQueryRun",
     "QueryCooldownState",
+    "LifecycleMonitorRun",
 ]

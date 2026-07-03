@@ -123,8 +123,8 @@ def ai_candidate_profile_path() -> Path:
     Canonical AI scoring candidate profile (markdown).
 
     Default: config/profiles/ai_candidate_profile.example.md
-    Override: AI_CANDIDATE_PROFILE_PATH (absolute or relative to repo root).
     Override with AI_CANDIDATE_PROFILE_PATH for a private resume profile (gitignored).
+    Override: AI_CANDIDATE_PROFILE_PATH (absolute or relative to repo root).
     """
     override = os.environ.get("AI_CANDIDATE_PROFILE_PATH", "").strip()
     if override:

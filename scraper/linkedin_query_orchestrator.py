@@ -43,6 +43,7 @@ class QueryDefinition:
     domain_sub: str | None = None
     company: str | None = None
     url_mode: str | None = None
+    navigation: dict | None = None
 
 
 @dataclass
@@ -178,6 +179,7 @@ def build_linkedin_search_url(
 
 
 _LANDING_URL_MODES = frozenset({"qualification_landing", "search_results_landing"})
+_DEFAULT_QUALIFICATION_ENTRY_URL = "https://www.linkedin.com/jobs/"
 
 
 def resolve_query_url(q: dict, filter_profiles: dict) -> str:
@@ -190,7 +192,14 @@ def resolve_query_url(q: dict, filter_profiles: dict) -> str:
             else "LINKEDIN_BROAD_PM_LANDING_URL"
         )
         url = os.environ.get(env_key, "").strip()
-        url = url or str(q.get("landing_url", "")).strip()
+        if url:
+            return url
+        if url_mode == "qualification_landing":
+            nav = q.get("navigation")
+            if isinstance(nav, dict) and nav:
+                entry = str(nav.get("entry_url", "") or "").strip()
+                return entry or _DEFAULT_QUALIFICATION_ENTRY_URL
+        url = str(q.get("landing_url", "")).strip()
         if not url:
             raise ValueError(
                 f"{url_mode} query {q.get('id', '?')!r} missing landing_url"
@@ -213,6 +222,8 @@ def load_query_catalog(config_path: Path | None = None) -> tuple[dict, list[Quer
         if not q.get("enabled", True):
             continue
         url_mode = str(q.get("url_mode", "") or "").strip() or None
+        nav_raw = q.get("navigation")
+        navigation = nav_raw if isinstance(nav_raw, dict) and nav_raw else None
         url = resolve_query_url(q, fps)
         out.append(
             QueryDefinition(
@@ -226,6 +237,7 @@ def load_query_catalog(config_path: Path | None = None) -> tuple[dict, list[Quer
                 domain_sub=q.get("domain_sub"),
                 company=q.get("company"),
                 url_mode=url_mode,
+                navigation=navigation,
             )
         )
     return cfg, out
@@ -757,6 +769,12 @@ def run_linkedin_acquisition_session(
             "label": query.label,
             "filter_profile": query.filter_profile,
         }
+        if (
+            query.url_mode == "qualification_landing"
+            and query.navigation
+            and not os.environ.get("LINKEDIN_QUALIFICATION_LANDING_URL", "").strip()
+        ):
+            query_run["qualification_navigation"] = query.navigation
         t0 = time.monotonic()
         err = None
         jobs: list[dict] = []

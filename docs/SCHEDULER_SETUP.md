@@ -1,17 +1,35 @@
 # Scheduler setup (macOS production)
 
+**Status:** Task 3 scheduler activation **complete** (2026-06-23). **OHM Phases 1–6 complete** (2026-06-25): lifecycle monitor LaunchAgent **re-enabled** at **17:00 IST once daily** with governance limits (`data/ohm_signoff.json`). **OHM Phase 2 (2026-06-25):** provider protection detection + `monitor_provider_state` persistence; mid-run LinkedIn abort on protection pages (no per-job `check_failed` spam).
+
 **Canonical reference** for production scheduling install, configuration, logs, and uninstall on the private repo. The scheduler is a **first-class platform capability**: it lives outside `main.py` and invokes the existing pipeline unchanged (D8B SQLite defaults, default `*_MAX_RUNS` caps, no `SQLITE_*` exports).
 
-**Schedule (approved):**
+**Schedule (current production):**
 
 | Job | Local time | Script |
 |-----|------------|--------|
-| Acquisition + parity | **10:00** and **21:00** IST daily | `scripts/scheduling/run_scheduled_acquisition.sh` |
+| Acquisition + parity | **09:00** and **21:00** IST daily | `scripts/scheduling/run_scheduled_acquisition.sh` |
+| Lifecycle monitor (Scheduler B) | **17:00** IST once daily | `scripts/scheduling/run_scheduled_lifecycle_monitor.sh` |
 | Backup (optional) | **Sunday 23:00** IST | `scripts/scheduling/run_scheduled_backup.sh` |
 
-**Source of truth for times:** [`scripts/scheduling/launchd/com.vasundhara-bisht.ai-job-agent.acquisition.plist.template`](../scripts/scheduling/launchd/com.vasundhara-bisht.ai-job-agent.acquisition.plist.template) (`StartCalendarInterval` Hour **10** and **21**). Installed plist under `~/Library/LaunchAgents/` must match the template after `install_launchagents.sh`. All documentation references **10:00 / 21:00 IST**.
+**Historical (Task 3, pre-OHM):** lifecycle monitor ran at **13:00** and **01:00** IST twice daily until paused for Operational Hardening.
 
-**Not scheduled:** Streamlit dashboard (manual review). See [PRODUCTION_OPERATIONS.md](./PRODUCTION_OPERATIONS.md) §3.
+**Source of truth for times:** plist templates under `scripts/scheduling/launchd/` (`StartCalendarInterval`). Installed plists under `~/Library/LaunchAgents/` must match templates after `install_launchagents.sh`.
+
+**Task 3 activation runbook:** SCHEDULER_SETUP.md
+
+**Not scheduled:** Streamlit dashboard (manual review). Launch with **`./scripts/run_dashboard.sh`** (loads `.env` like scheduler wrappers).
+
+### Dashboard (manual review)
+
+```bash
+cd ~/Desktop/autonomous-career-intelligence-platform
+./scripts/run_dashboard.sh
+# Custom port:
+# ./scripts/run_dashboard.sh --server.port 8502
+```
+
+The launcher sources repo-root `.env` before `streamlit run dashboard/app.py`. Bare `streamlit run` does **not** load `.env`.
 
 ---
 
@@ -19,11 +37,11 @@
 
 | Layer | Role |
 |-------|------|
-| **Product** | Twice-daily automated job discovery (10:00 / 21:00 IST); dashboard review stays human-in-the-loop |
-| **Architecture** | External `launchd` → `run_scheduled_acquisition.sh` → `with_file_lock.py` (fcntl) → `main.py` → SQLite dual-write; one `acquisition_runs` row per pipeline run; file lock prevents concurrent writers |
+| **Product** | Twice-daily acquisition (09:00 / 21:00 IST); lifecycle monitor **17:00 IST once daily**; dashboard review stays human-in-the-loop |
+| **Architecture** | External `launchd` → locked shell wrappers → `main.py` or `run_lifecycle_monitor.py`; separate file locks per scheduler |
 | **Operational** | Install, logs, parity validation, uninstall — this document |
 
-The scheduler does not alter scoring, acquisition, or persistence logic inside `src/agent/`.
+The scheduler does not alter scoring, acquisition, or persistence logic inside `src/agent/`. Listing availability is tracked via `listing_status` (lifecycle monitor); the legacy inactive sweep was retired in Task 4.
 
 ---
 
@@ -37,15 +55,9 @@ The scheduler does not alter scoring, acquisition, or persistence logic inside `
 
 ---
 
-## Operator-local artifacts
+## Public mirror note
 
-Scheduling scripts ship in this repository. The following stay on your machine and are not committed:
-
-- `.env` (secrets)
-- `logs/scheduled/` (run output)
-- Installed plists under `~/Library/LaunchAgents/`
-
-Default profile path: `config/profiles/ai_candidate_profile.example.md` (override with `AI_CANDIDATE_PROFILE_PATH`). See [config/profiles/README.md](../config/profiles/README.md).
+`scripts/scheduling/` (shell scripts and plist templates) may be copied to the **public** portfolio repo on promotion. **Operator-local only:** `.env`, `logs/scheduled/`, and installed plists under `~/Library/LaunchAgents/`. Sanitize `docs/SCHEDULER_SETUP.md` on promote (example profile paths) per PUBLIC_REPO.md.
 
 ---
 
@@ -58,28 +70,42 @@ Default profile path: `config/profiles/ai_candidate_profile.example.md` (overrid
 
    ```bash
    OPENAI_API_KEY=sk-...
-   # Optional:
-   # AI_CANDIDATE_PROFILE_PATH=config/profiles/ai_candidate_profile.example.md
    ```
 
-   Scheduled runs set `LINKEDIN_MAX_RUNS=3` in the acquisition wrapper (not via `.env`). Manual `python main.py` defaults remain unchanged.
+   Scheduled acquisition sets `LINKEDIN_MAX_RUNS=3` in the wrapper (not via `.env`). Manual `python main.py` defaults remain unchanged.
 
 5. Auth: `data/linkedin_auth.json` and `data/instahyre_auth.json` present (scraper login flows).
 6. Machine awake and logged in as your macOS user at scheduled times (LaunchAgents run in your GUI session).
+7. **Dashboard:** use `./scripts/run_dashboard.sh` (not bare `streamlit run`) so `.env` secrets load.
 
 ---
 
 ## What each run does
 
-### Acquisition (10:00 / 21:00 IST)
+### Acquisition (09:00 / 21:00 IST)
 
 1. Exclusive file lock via [scripts/scheduling/with_file_lock.py](../scripts/scheduling/with_file_lock.py) (`fcntl`) on `/tmp/ai-job-agent-acquisition.lock` — skips if a previous run is still active.
 2. `python main.py` — default D8B SQLite flags (no `SQLITE_*` exports); wrapper sets `LINKEDIN_MAX_RUNS=3` (other `*_MAX_RUNS` use code defaults, including Instahyre feeds + **Interested sync** when `INSTAHYRE_MAX_RUNS` is non-zero).
 3. `python scripts/validate_sqlite_parity.py --mode production --fail-on-error`
 
-When Instahyre is enabled, scheduled runs include post-feed **Interested synchronization** (list-only Applied-state sync) inside `main.py` — same as manual acquisition. Look for `🟣 INSTAHYRE INTERESTED SYNC SUMMARY` in acquisition logs. Parity validation behavior is unchanged.
+When Instahyre is enabled, scheduled runs include post-feed **Interested synchronization** (list-only Applied-state sync) inside `main.py` — same as manual acquisition. Look for `🟣 INSTAHYRE INTERESTED SYNC SUMMARY` in acquisition logs.
 
 Logs: `logs/scheduled/acquisition-YYYYMMDD-HHMMSS.log` (gitignored).
+
+### Lifecycle monitor (17:00 IST once daily)
+
+1. Probe acquisition lock — **skip exit 0** if acquisition is in progress.
+2. Exclusive lock on `/tmp/ai-job-agent-lifecycle-monitor.lock`.
+3. `python scripts/run_lifecycle_monitor.py --apply` with OHM Phase 1 defaults from wrapper:
+   - `LIFECYCLE_MONITOR_LINKEDIN_MAX_PER_RUN=150` (cohort cap when `--limit` omitted)
+   - `LIFECYCLE_MONITOR_JOB_DELAY_SEC=2.0`
+   - `LIFECYCLE_MONITOR_BUDGET_TZ=Asia/Kolkata` (daily per-provider budget reset; “Checked Today” on dashboard)
+   - Skips all LinkedIn job checks when auth probe is `degraded` or provider protection is detected (OHM Phase 2)
+4. `python scripts/validate_lifecycle_monitor_parity.py` (TD9 warning-only; wrapper exits 0 if monitor succeeded).
+
+When the lifecycle LaunchAgent plist is installed, runs fire at **17:00 IST once daily**. OHM Phase 6 re-enable is complete (`data/ohm_signoff.json`); use Operational Controls Pause/Resume or `uninstall_launchagents.sh --lifecycle-only` to change posture.
+
+Logs: `logs/scheduled/lifecycle-monitor-YYYYMMDD-HHMMSS.log` (gitignored).
 
 ### Backup (optional, Sunday 23:00)
 
@@ -99,9 +125,11 @@ chmod +x scripts/scheduling/*.sh
 ./scripts/scheduling/install_launchagents.sh
 # Optional weekly backup:
 ./scripts/scheduling/install_launchagents.sh --with-backup
+# Partial install:
+# ./scripts/scheduling/install_launchagents.sh --lifecycle-only
 ```
 
-This copies rendered plists to `~/Library/LaunchAgents/` and runs `launchctl bootstrap`.
+This copies rendered plists to `~/Library/LaunchAgents/` and runs `launchctl bootstrap` for acquisition **and** lifecycle monitor.
 
 Manual install (without helper script):
 
@@ -121,33 +149,45 @@ launchctl bootstrap "gui/$(id -u)" \
 ```bash
 cd ~/Desktop/autonomous-career-intelligence-platform
 ./scripts/scheduling/run_scheduled_acquisition.sh
+./scripts/scheduling/run_scheduled_lifecycle_monitor.sh
 ```
 
 Or trigger via launchd:
 
 ```bash
 launchctl kickstart -k "gui/$(id -u)/com.vasundhara-bisht.ai-job-agent.acquisition"
+launchctl kickstart -k "gui/$(id -u)/com.vasundhara-bisht.ai-job-agent.lifecycle-monitor"
 ```
 
-Confirm a new log under `logs/scheduled/` and `SQLITE DUAL-WRITE SUMMARY` → `success=1` in the log.
+Confirm new logs under `logs/scheduled/` and `SQLITE DUAL-WRITE SUMMARY` → `success=1` in acquisition logs.
 
 ---
 
 ## Uninstall / disable
 
 ```bash
+./scripts/scheduling/uninstall_launchagents.sh
+# Lifecycle monitor only (Task 3 rollback):
+# ./scripts/scheduling/uninstall_launchagents.sh --lifecycle-only
+```
+
+Or manually:
+
+```bash
 UID_NUM=$(id -u)
 launchctl bootout "gui/${UID_NUM}" \
   ~/Library/LaunchAgents/com.vasundhara-bisht.ai-job-agent.acquisition.plist
-rm -f ~/Library/LaunchAgents/com.vasundhara-bisht.ai-job-agent.acquisition.plist
-# If backup was installed:
 launchctl bootout "gui/${UID_NUM}" \
-  ~/Library/LaunchAgents/com.vasundhara-bisht.ai-job-agent.backup.plist 2>/dev/null || true
-rm -f ~/Library/LaunchAgents/com.vasundhara-bisht.ai-job-agent.backup.plist
-rm -f /tmp/ai-job-agent-acquisition.lock /tmp/ai-job-agent-backup.lock
+  ~/Library/LaunchAgents/com.vasundhara-bisht.ai-job-agent.lifecycle-monitor.plist
+rm -f ~/Library/LaunchAgents/com.vasundhara-bisht.ai-job-agent.*.plist
+rm -f /tmp/ai-job-agent-acquisition.lock /tmp/ai-job-agent-lifecycle-monitor.lock /tmp/ai-job-agent-backup.lock
 ```
 
-Pipeline remains runnable manually: `python main.py`.
+Pipeline remains runnable manually: `python main.py`, `python scripts/run_lifecycle_monitor.py --apply`, `python scripts/run_ai_refresh.py --preset discovery`.
+
+### AI refresh (manual-only, v1)
+
+**Refresh AI Evaluations** is **not** wired to launchd in v1. Trigger via dashboard Operator Controls or `python scripts/run_ai_refresh.py`. Uses `/tmp/ai-job-agent-ai-refresh.lock` and defers when acquisition lock is held. Optional future: launchd wrapper parity with acquisition/lifecycle — see [PROJECT_COMMAND_REFERENCE.md](./PROJECT_COMMAND_REFERENCE.md) §10.
 
 ---
 
@@ -155,14 +195,14 @@ Pipeline remains runnable manually: `python main.py`.
 
 | Topic | Guidance |
 |-------|----------|
-| **Overlap** | If morning run exceeds 12h, evening run exits 0 with SKIP (lock). Check logs. |
-| **Failures** | Inspect latest `logs/scheduled/acquisition-*.log`; re-run manually after fixing auth/API. |
-| **OpenAI cost** | Up to `DEBUG_LIMIT=300` scores per run; evening run is usually smaller on a warm DB. |
-| **LinkedIn cooldown** | 32h query cooldown — second daily run may score fewer new LinkedIn jobs; Instahyre/ATS still add value. |
+| **Overlap** | Acquisition and monitor use separate locks. Monitor skips (exit 0) if acquisition lock is held. |
+| **Failures** | Inspect latest `logs/scheduled/*.log`; re-run manually after fixing auth/API. |
+| **OpenAI cost** | Scales with eligible AI candidates per acquisition run (no per-run cap). |
+| **LinkedIn cooldown** | 32h query cooldown — second daily run may score fewer new LinkedIn jobs. |
 | **Log rotation** | Prune `logs/scheduled/` periodically (e.g. keep 30 days). |
 | **Parity fails on empty DB** | Run one successful `main.py` before expecting `--fail-on-error` to pass. |
-| **Parity WARN vs FAIL** | `--fail-on-error` exits **1** only on **strict** failures. Stale optional `historical_jobs.csv` keys (default `SQLITE_EXPORT_HISTORICAL_CSV=0`) are **warnings** — scheduler can still report `parity exit=0` when DB HEALTH and OPERATIONAL PASS. |
-| **False SKIP (no main.py in log)** | Older wrappers used `/usr/bin/flock`, which macOS lacks; upgrade to `with_file_lock.py`. Real overlap shows `SKIP: another acquisition holds` without a flock “No such file” error. Lock errors exit non-zero. |
+| **Parity WARN vs FAIL** | `--fail-on-error` exits **1** only on **strict** failures. |
+| **False SKIP (no main.py in log)** | Real overlap shows `SKIP: another acquisition holds` without flock errors. |
 
 ---
 
@@ -170,7 +210,8 @@ Pipeline remains runnable manually: `python main.py`.
 
 | Label | Calendar | Command |
 |-------|----------|---------|
-| `com.vasundhara-bisht.ai-job-agent.acquisition` | 10:00, 21:00 IST daily | `run_scheduled_acquisition.sh` |
+| `com.vasundhara-bisht.ai-job-agent.acquisition` | 09:00, 21:00 IST daily | `run_scheduled_acquisition.sh` |
+| `com.vasundhara-bisht.ai-job-agent.lifecycle-monitor` | 17:00 IST once daily | `run_scheduled_lifecycle_monitor.sh` |
 | `com.vasundhara-bisht.ai-job-agent.backup` | Sunday 23:00 (optional) | `run_scheduled_backup.sh` |
 
 Templates live under `scripts/scheduling/launchd/*.plist.template` (`@REPO_ROOT@` replaced on install).

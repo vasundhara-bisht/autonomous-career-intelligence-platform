@@ -14,7 +14,7 @@ Primary documentation index — start here.
 |-----|---------|
 | [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md) | **Status snapshot** — capability maturity, limitations, milestones summary; architecture diagrams in this README; live procedures in PRODUCTION_OPERATIONS |
 | [docs/REPOSITORY_MAP.md](docs/REPOSITORY_MAP.md) | **Codebase navigation** — structure, data flow, subsystem map, entry points |
-| [docs/SCHEDULER_SETUP.md](docs/SCHEDULER_SETUP.md) | **Canonical scheduling** — macOS launchd install, 10:00 / 21:00 IST, logs, uninstall |
+| [docs/SCHEDULER_SETUP.md](docs/SCHEDULER_SETUP.md) | **Canonical scheduling** — macOS launchd install, acquisition **09:00 / 21:00 IST**, lifecycle monitor **17:00 IST once daily**, logs, uninstall |
 | [docs/PRODUCTION_OPERATIONS.md](docs/PRODUCTION_OPERATIONS.md) | **Canonical operator procedures** — daily workflow + pre-production reset |
 | [docs/PROJECT_COMMAND_REFERENCE.md](docs/PROJECT_COMMAND_REFERENCE.md) §10b | Commands, flags, troubleshooting |
 | [docs/SQLITE_IMPLEMENTATION_PLAN.md](docs/SQLITE_IMPLEMENTATION_PLAN.md) | D0–D8B migration history and rollback reference |
@@ -125,7 +125,7 @@ Detailed install steps are in [Local Setup for Developers](#local-setup-for-deve
 - API keys, login sessions, or live job data (private/local by design).
 - Guaranteed apply links or employer endorsements - always verify on the source site.
 
-> **For engineers:** `python main.py` then `streamlit run dashboard/app.py` - see [Local Setup for Developers](#local-setup-for-developers).
+> **For engineers:** `python main.py` then `./scripts/run_dashboard.sh` - see [Local Setup for Developers](#local-setup-for-developers).
 
 ---
 
@@ -164,7 +164,8 @@ The system is designed as a **personal career copilot** that can be demonstrated
 - **Tier-2 metadata (Instahyre)** - Posted date and age from Schema.org JSON-LD on detail pages
 - **Streamlit dashboard** - Job Search Progression (Discovery / Application / Outcomes), KPIs, source distribution, filterable job table, pipeline analytics expander, and recruiter CRM — see [Dashboard](#dashboard)
 - **Operational observability** - Summarized logs for Stage-1, identity health, LinkedIn/Instahyre acquisition, and AI batches
-- **Scheduled production acquisition** - Twice-daily local runs (10:00 / 21:00 IST) via launchd, file-locked wrappers, and post-run parity validation; dashboard review remains operator-driven
+- **Scheduled production acquisition** - Twice-daily local runs (**09:00 / 21:00 IST**) via launchd, file-locked wrappers, and post-run parity validation
+- **Scheduled lifecycle monitor (Scheduler B)** - Once-daily listing availability checks (**17:00 IST**) via launchd; `listing_status` on jobs is the sole listing-availability model; dashboard via `./scripts/run_dashboard.sh`
 
 ---
 
@@ -174,7 +175,11 @@ The system is designed as a **personal career copilot** that can be demonstrated
   <img src="./diagrams/dashboard-hero.png" alt="Streamlit dashboard: Last acquisition refresh, Total Jobs, Latest Acquisition, Total Recruiters, Job Search Progression, and Source Distribution" width="720" />
 </p>
 
-The **Streamlit dashboard** is the operator UI for reviewing acquisition output: header KPIs (**Total Jobs**, **Latest Acquisition**, **Total Recruiters**), **Recommended Actions** (four rule-based job queues on `dashboard_df` in a 2×2 Command Center), **Job Search Progression** stage cards (Discovery → Application → Outcomes), source distribution (human-readable source labels), a sidebar-filtered job listings table, collapsible pipeline analytics, and recruiter relationship management. Dashboard metrics (recommended actions, progression, charts, Total Jobs) use the visibility cohort (`dashboard_df`); sidebar filters affect the job table only. Open after a pipeline run with `streamlit run dashboard/app.py`. Architecture: [docs/PROJECT_COMMAND_REFERENCE.md §8](docs/PROJECT_COMMAND_REFERENCE.md#8-streamlit-dashboard), [docs/REPOSITORY_MAP.md §5](docs/REPOSITORY_MAP.md#5-data-flow).
+The **Streamlit dashboard** is the operator UI for reviewing acquisition output: header KPIs (**Total Jobs**, **Latest Acquisition**, **Total Recruiters**), **Last Monitoring Refresh**, then **Operational Controls** (pause/resume acquisition and lifecycle schedulers; **Refresh AI Evaluations** with preset picker and subprocess trigger when `SQLITE_DASHBOARD_WRITE=1`), **Acquisition Health** (Scheduler A summary KPIs + run history), **Operational Monitor Health** (Scheduler B summary KPIs + run history), **AI Refresh Health** (latest completed manual re-score run: two-row KPIs — Health/Last Preset, then Jobs Scored/Last Run Duration/Last Run Cohort/Last Run Eligible/Batch Failures — plus run history without cap-skipped columns), **Recommended Actions** (four rule-based job queues on `dashboard_df` in a 2×2 Command Center; `listing_status=open` only), **Job Search Progression** stage cards (Discovery → Application → Outcomes), source distribution (human-readable source labels), a sidebar-filtered job listings table (Listing/Age columns; `open` and `closed` visible; `removed` hidden), collapsible pipeline analytics, recruiter relationship management, and **Outreach Intelligence V1–V1.3** (opportunity-centric outreach attempt log below CRM; V1.2 LinkedIn post ingestion, V1.3 Job Outreach split). Listing visibility is **always on** via `listing_status` (TD10). Dashboard metrics use the visibility cohort (`dashboard_df`); sidebar filters affect the job table only. **Canonical launch:** `./scripts/run_dashboard.sh` (loads repo `.env`). Architecture: [docs/PROJECT_COMMAND_REFERENCE.md §8](docs/PROJECT_COMMAND_REFERENCE.md#8-streamlit-dashboard), [docs/REPOSITORY_MAP.md §5](docs/REPOSITORY_MAP.md#5-data-flow).
+
+<p align="center">
+  <img src="./diagrams/dashboard-job-listings-listing-status.png" alt="Job Listings with Listing and Age columns under listing_status visibility" width="720" />
+</p>
 
 ### Recommended Actions Command Center
 
@@ -241,8 +246,6 @@ AI evaluation runs in **batches** (default batch size: 15) against the external 
 
 Enable verbose OpenAI diagnostics with `DEBUG_AI=true`.
 
-> **Note:** A configurable `DEBUG_LIMIT` caps how many jobs enter AI scoring per run (tunable for validation vs production cost).
-
 ---
 
 ## Sample Ranked Recommendations
@@ -284,11 +287,13 @@ Dedup runs **after** Stage-1 and **before** description fetch to avoid redundant
 
 ## Recruiter Intelligence Layer
 
-When sources expose hiring contact metadata (especially **Instahyre** detail pages), the pipeline:
+When sources expose hiring contact metadata (**Instahyre** detail pages, **LinkedIn** job pages), the pipeline:
 
 - Extracts recruiter name, title, company, and profile link  
+- **LinkedIn:** primary BEM selector + flagship3 poster-section fallback for `hiring_manager` and relative `time_posted` (see [PROJECT_COMMAND_REFERENCE §8](docs/PROJECT_COMMAND_REFERENCE.md) for probe/backfill tooling)  
 - Maps `hiring_manager` for downstream ranking and CRM  
-- Persists recruiter records in **SQLite** (`recruiters` table) with mutation-aware updates; optional **`recruiter_crm.csv`** export when enabled
+- Persists recruiter records in **SQLite** (`recruiters` table) with mutation-aware updates; optional **`recruiter_crm.csv`** export when enabled  
+- **Forward HM protection:** re-scrapes that return sentinel HM (`Not Specified` / blank) do not overwrite a real stored name (dual-write merge)
 
 This supports a **relationship-centric** view of the job market - not just listings, but who is behind them.
 
@@ -297,6 +302,22 @@ The dashboard **Recruiter Relationship Manager** shows **Total Recruiters**, a *
 <p align="center">
   <img src="./diagrams/dashboard-crm.png" alt="Recruiter Relationship Manager: relationship progression stage cards and CRM table with recruiter stage column" width="720" />
 </p>
+
+### Outreach Intelligence V1–V1.3
+
+**Outreach Intelligence** (below Recruiter Relationship Management) is an opportunity-centric outreach attempt log — not a CRM. KPIs: Total Outreach Records, Active Outreach, Follow-Ups Due Today, Overdue Follow-Ups. Supports manual + job-linked creation (optional prefill from Job Listings). **V1.1** adds required hiring signal type (9 types incl. `job_listing`) and optional signal URL on new records. **V1.2** adds LinkedIn post Fetch Details + AI prefill in Add Outreach. **V1.3** adds Job Outreach split with DB-driven prefill (`outreach_type`). Edit status, signal, and follow-up dates in the outreach table when `SQLITE_DASHBOARD_WRITE=1`; read-only KPIs, filters, and table when writes are off but `SQLITE_READ=1`. No write-back to recruiter stages or job pipeline. See [docs/PROJECT_COMMAND_REFERENCE.md §8](docs/PROJECT_COMMAND_REFERENCE.md#outreach-intelligence-v1).
+
+### Job freshness metadata (data layer)
+
+At acquisition, relative `time_posted` is normalized to ISO `posted_at_date` / `age_days` in SQLite (`posted_date_derive` + dual-write COALESCE). Optional one-time backfills: anchor derive and Playwright re-scrape ([PROJECT_COMMAND_REFERENCE §8](docs/PROJECT_COMMAND_REFERENCE.md)). **Dashboard Posted column still uses `last_seen`** — display phase is future.
+
+### Inactive job flag
+
+Listing availability in the dashboard and Recommended Actions is driven by **`listing_status`** on jobs (`open`, `closed`, `removed`, etc.), updated by the lifecycle monitor. LinkedIn user-applied detection during monitor runs can auto-promote discovery-stage jobs to **Applied** and set **`monitor_exempt`**. The legacy post-acquisition inactive sweep (`currently_active` on observations) was retired in Task 4 (TD10).
+
+### Data repair tooling (HM)
+
+One-time operator scripts for LinkedIn HM gaps: manifest backfill for sentinel HM without recruiter links (Task C), overwrite repair when a link exists (Task E). Commands and cohort guards: [PROJECT_COMMAND_REFERENCE §8](docs/PROJECT_COMMAND_REFERENCE.md) and §10b.
 
 ### Manual Hiring Manager Capture (Phase 3B)
 
@@ -318,7 +339,7 @@ Logging is designed for **live run monitoring**, not debug dumps.
 | Stage | Production output | Debug flag |
 |-------|-------------------|------------|
 | Stage-1 | Aggregate summary (counts, score buckets, by source) | `DEBUG_STAGE1=true` |
-| LinkedIn | Acquisition start/complete, query metrics, hiring managers | `DEBUG_LINKEDIN=true` |
+| LinkedIn | Acquisition start/complete, query metrics, HM extraction (primary + flagship3), `time_posted` | `DEBUG_LINKEDIN=true` |
 | Instahyre | Feed/session summaries, compact per-job lines | `DEBUG_INSTAHYRE=true` |
 | Identity | Job + production identity health dashboards | `DEBUG_IDENTITY=true` |
 | AI scoring | Batch progress + completion totals | `DEBUG_AI=true` |
@@ -350,7 +371,7 @@ Runtime artifacts (`logs/`, `__pycache__/`, query state files) are gitignored an
 2. **Run acquisition** - `python main.py` (SQLite on by default; no `SQLITE_*` exports).  
 3. **Review terminal summary** - Pipeline summary, identity health, AI batch results.  
 4. **Validate** - `python scripts/validate_sqlite_parity.py --mode production --fail-on-error` (recommended).  
-5. **Open dashboard** - `streamlit run dashboard/app.py` (reads `historical_jobs_view` + visibility layer; export cohort via `current_jobs_view`).  
+5. **Open dashboard** - `./scripts/run_dashboard.sh` (loads `.env`). Reads `historical_jobs_view` + listing-status visibility layer; export cohort via `current_jobs_view`.  
 6. **Iterate** - Adjust query catalogs, feeds, or [profile markdown](config/profiles/ai_candidate_profile.example.md); re-run incrementally.  
 
 **Canonical daily and reset procedures:** [docs/PRODUCTION_OPERATIONS.md](docs/PRODUCTION_OPERATIONS.md). System overview: [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md).
@@ -373,7 +394,7 @@ python main.py
 
 ## Future Roadmap
 
-Current product state and capability maturity: [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md) §1 and §8–§9.
+See docs/PRODUCT_STATUS_SUMMARY.md for canonical phase statuses and recommended priorities. **Lifecycle Monitor Tasks 1–4 + OHM complete.** Current product state: [docs/PRODUCT_STATUS_SUMMARY.md](docs/PRODUCT_STATUS_SUMMARY.md) §1 and §8–§9.
 
 ---
 
@@ -403,17 +424,25 @@ ai-job-agent/
 │   ├── funnel_workflow.py  # Progression stage-card UI
 │   ├── recruiter_stages.py # CRM workflow stage constants
 │   ├── recruiter_funnel.py # Recruiter progression counts
-│   └── recruiter_workflow.py  # Recruiter progression stage-card UI
+│   ├── recruiter_workflow.py  # Recruiter progression stage-card UI
+│   ├── outreach_status.py  # Outreach status/channel constants
+│   ├── outreach_metrics.py # Outreach KPI computation
+│   ├── outreach_prefill.py # Job-linked outreach prefill
+│   ├── outreach_ui.py      # Outreach Intelligence V1 dashboard section
+│   ├── operator_controls_ui.py  # Operational Controls (schedulers + AI refresh trigger)
+│   ├── acquisition_ui.py   # Acquisition Health section
+│   ├── monitor_ui.py       # Operational Monitor Health section
+│   └── ai_refresh_ui.py    # AI Refresh Health section
 ├── scraper/                # Multi-source acquisition
 ├── alembic/                # Database schema migrations
 ├── tests/                  # Unit tests
 ├── config/                 # Query/feed catalogs + profiles/
 ├── data/                   # SQLite DB, runtime CSV + auth (gitignored)
 ├── diagrams/               # Architecture, pipeline, and dashboard visuals
-├── scripts/                # Archive, reset, validation, scheduling helpers
+├── scripts/                # Archive, reset, validation, scheduling, backfill/repair/sweep/probe ops
 │   └── scheduling/         # launchd wrappers + plist templates (production)
 ├── archive/                # Point-in-time state snapshots
-└── docs/                   # PRODUCT_STATUS_SUMMARY, REPOSITORY_MAP, PRODUCTION_OPERATIONS, PCR, SQLite plans, CLONE_SETUP
+└── docs/                   # PRODUCT_STATUS_SUMMARY, REPOSITORY_MAP, PRODUCTION_OPERATIONS, PCR, SQLite plans
 ```
 
 **Live runtime files (local only, gitignored under `data/` and `logs/`):**  
@@ -470,12 +499,12 @@ playwright install chromium
 ```bash
 export OPENAI_API_KEY="your-key-here"
 python main.py
-streamlit run dashboard/app.py
+./scripts/run_dashboard.sh
 ```
 
 ### 6. Production scheduling (macOS)
 
-For automated twice-daily acquisition (10:00 and 21:00 IST), full install and operations: [docs/SCHEDULER_SETUP.md](docs/SCHEDULER_SETUP.md). Requires repo `.env` with `OPENAI_API_KEY` and a logged-in macOS session for Playwright auth.
+Automated acquisition (**09:00 and 21:00 IST**) and lifecycle monitor (**17:00 IST once daily**): [docs/SCHEDULER_SETUP.md](docs/SCHEDULER_SETUP.md). Task 3 activation record: docs/SCHEDULER_SETUP.md. Task 4 cutover record (complete): docs/PRODUCT_STATUS_SUMMARY.md. Requires repo `.env` with `OPENAI_API_KEY` and a logged-in macOS session for Playwright auth.
 
 ### 7. Optional debug modes
 
@@ -523,7 +552,7 @@ This repository is intended as a **professional showcase** of product thinking, 
 
 - **Credentials and live data are not included** - Auth JSON, CSV outputs, and logs stay local under `data/` (gitignored). See [docs/PUBLIC_REPO.md](docs/PUBLIC_REPO.md) before publishing.  
 - **Candidate profile:** `config/profiles/ai_candidate_profile.example.md` (override with `AI_CANDIDATE_PROFILE_PATH`)  
-- **Run caps and debug limits** may be tuned for validation; adjust `DEBUG_LIMIT` and `*_MAX_RUNS` for production economics.  
+- **Run caps** may be tuned for validation; adjust `*_MAX_RUNS` for production economics.  
 - **Scraping** depends on third-party site behavior; respect terms of service and rate limits.  
 - **AI scores are advisory** - Not hiring decisions; always verify listings on source sites.  
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scheduled acquisition + production parity validation (private production).
-# Invoked by launchd at 10:00 and 21:00 IST. See docs/SCHEDULER_SETUP.md.
+# Invoked by launchd at 09:00 and 21:00 IST. See docs/SCHEDULER_SETUP.md.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -39,10 +39,22 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   exit 1
 fi
 
-export AI_CANDIDATE_PROFILE_PATH="${AI_CANDIDATE_PROFILE_PATH:-config/profiles/ai_candidate_profile.example.md}"
+export AI_CANDIDATE_PROFILE_PATH="${AI_CANDIDATE_PROFILE_PATH:-config/profiles/ai_candidate_profile_v2.md}"
 unset LINKEDIN_QUALIFICATION_LANDING_URL || true
 export LINKEDIN_MAX_RUNS=3
+export ACQUISITION_RUN_TRIGGER=scheduled
 echo "Scheduler cap: LINKEDIN_MAX_RUNS=3"
+
+PAUSE_MSG="SKIP: acquisition paused by operator ($(date -Iseconds))"
+if ! "$PYTHON" scripts/scheduling/check_operator_pause.py \
+  --scheduler acquisition \
+  --skip-message "$PAUSE_MSG"; then
+  echo "$PAUSE_MSG"
+  echo "============================================================"
+  echo "Scheduled acquisition skipped (operator pause): $(date -Iseconds)"
+  echo "============================================================"
+  exit 0
+fi
 
 SKIP_MSG="SKIP: another acquisition holds $LOCK_FILE ($(date -Iseconds))"
 exec "$PYTHON" scripts/scheduling/with_file_lock.py \

@@ -92,7 +92,6 @@ class ResetSqliteTruncateTests(unittest.TestCase):
                     job_id=job.id,
                     run_id=run.id,
                     observed_at=now,
-                    currently_active=True,
                     times_seen=1,
                 )
             )

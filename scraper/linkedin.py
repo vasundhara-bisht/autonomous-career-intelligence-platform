@@ -4,7 +4,7 @@ import random
 import re
 import time
 import traceback
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import paths
 from agent.job_identity import generate_job_key_v2
@@ -12,10 +12,133 @@ from agent.job_identity import generate_job_key_v2
 # from agent.filter_engine import apply_stage1_filter
 
 _CARD_SELECTOR = "li.scaffold-layout__list-item"
+_LI_PRIMARY_POSTED_SELECTOR = (
+    "div.job-details-jobs-unified-top-card__primary-description-container"
+)
+_LI_RELATIVE_POSTED_RE = re.compile(
+    r"(\d+\s+(hour|day|week|month)s?\s+ago)", re.I
+)
 _QUALIFICATION_CARD_TITLE_RE = re.compile(
     r"(Product Manager|Product Owner|Associate Product Manager|Senior Product Manager)",
     re.I,
 )
+_DEFAULT_QUALIFICATION_ENTRY_URL = "https://www.linkedin.com/jobs/"
+_QUALIFICATION_UI_TEXT_PATTERNS = (
+    re.compile(r"top\s+applicant", re.I),
+    re.compile(r"how\s+you\s+fit", re.I),
+)
+
+
+class QualificationNavigationError(RuntimeError):
+    """Raised when the scraper cannot reach the How You Fit / Top Applicant feed."""
+
+
+def _li_build_qualification_url_no_job_id(
+    keywords: str,
+    geo_id: str = "",
+) -> str:
+    """Build qualification landing URL without embedded job IDs."""
+    params = {
+        "showHowYouFit": "HOW_YOU_FIT",
+        "origin": "QUALIFICATION_LANDING",
+        "keywords": (keywords or "Product Manager").strip(),
+    }
+    gid = str(geo_id or "").strip()
+    if gid:
+        params["geoId"] = gid
+    return "https://www.linkedin.com/jobs/search-results/?" + urlencode(params)
+
+
+def _li_qualification_page_ready(page) -> bool:
+    """True when How You Fit qualification cards are visible."""
+    try:
+        loc = page.locator('div[role="button"]').filter(
+            has_text=_QUALIFICATION_CARD_TITLE_RE
+        )
+        if loc.count() == 0:
+            return False
+        return loc.first.is_visible()
+    except Exception:
+        return False
+
+
+def _li_try_click_qualification_entry(page) -> bool:
+    """Click Top Applicant / How you fit UI entry when visible."""
+    for pattern in _QUALIFICATION_UI_TEXT_PATTERNS:
+        try:
+            loc = page.locator(
+                "a, button, [role='button'], [role='link']"
+            ).filter(has_text=pattern)
+            if loc.count() == 0:
+                continue
+            target = loc.first
+            if not target.is_visible():
+                continue
+            target.click(timeout=5000)
+            _li_human_pause(page, 2200, 4200)
+            _li_diag_log(
+                f"qualification_ui_click pattern={pattern.pattern!r} "
+                f"url={page.url[:200]}"
+            )
+            return True
+        except Exception as e:
+            _li_diag_log(
+                f"qualification_ui_click_failed pattern={pattern.pattern!r} err={e!r}"
+            )
+    return False
+
+
+def _li_log_qualification_nav_reached(page, *, via: str) -> None:
+    _li_diag_log(
+        "qualification_landing_reached "
+        f"via={via!r} cards={_li_count_job_cards(page)} url={page.url[:200]}"
+    )
+
+
+def _li_navigate_to_qualification_landing(
+    page,
+    *,
+    entry_url: str | None = None,
+    keywords: str = "",
+    geo_id: str = "",
+) -> None:
+    """Navigate from a stable entry point to the How You Fit / Top Applicant feed."""
+    entry = (entry_url or _DEFAULT_QUALIFICATION_ENTRY_URL).strip()
+    _li_diag_log(f"qualification_nav_start entry_url={entry!r}")
+
+    page.goto(entry)
+    _li_human_pause(page, 4000, 6500)
+    if _li_qualification_page_ready(page):
+        _li_log_qualification_nav_reached(page, via="entry")
+        return
+
+    qual_url = _li_build_qualification_url_no_job_id(keywords, geo_id)
+    _li_diag_log(f"qualification_nav_fast_path url={qual_url[:240]}")
+    page.goto(qual_url)
+    _li_human_pause(page, 7000, 11000)
+    if _li_qualification_page_ready(page):
+        _li_log_qualification_nav_reached(page, via="fast_path")
+        return
+
+    try:
+        page.click("button[aria-label='Jobs']", timeout=5000)
+        _li_human_pause(page, 2200, 4000)
+        _li_diag_log("qualification_nav_jobs_tab_clicked", verbose=True)
+    except Exception as e:
+        _li_diag_log(f"qualification_nav_jobs_tab_skipped: {e!r}")
+
+    if not _li_qualification_page_ready(page):
+        _li_try_click_qualification_entry(page)
+
+    try:
+        _li_job_card_locator(page).first.wait_for(state="visible", timeout=20000)
+    except Exception as e:
+        if not _li_qualification_page_ready(page):
+            raise QualificationNavigationError(
+                "Could not reach Top Applicant / How You Fit feed"
+            ) from e
+
+    _li_log_qualification_nav_reached(page, via="ui_navigation")
 
 
 def _li_is_qualification_landing_url(url: str) -> bool:
@@ -42,6 +165,195 @@ def _li_job_card_locator(page):
             has_text=_QUALIFICATION_CARD_TITLE_RE
         )
     return page.locator(_CARD_SELECTOR)
+
+
+def _li_parse_relative_posted_text(text: str) -> str | None:
+    if not text:
+        return None
+    match = _LI_RELATIVE_POSTED_RE.search(text.lower())
+    return match.group(1) if match else None
+
+
+def _li_extract_time_posted_flagship3_fallback(page) -> str | None:
+    """Flagship3 job-details fallback when primary BEM selector misses."""
+    for paragraph in page.query_selector_all("main p"):
+        try:
+            text = (paragraph.inner_text() or "").lower()
+        except Exception:
+            continue
+        if "·" not in text:
+            continue
+        parsed = _li_parse_relative_posted_text(text)
+        if not parsed:
+            continue
+        if "applicant" in text:
+            return parsed
+        if _LI_RELATIVE_POSTED_RE.search(text):
+            return parsed
+
+    strong_matches: list[tuple[str, object]] = []
+    for strong in page.query_selector_all("main strong"):
+        try:
+            strong_text = strong.inner_text() or ""
+        except Exception:
+            continue
+        parsed = _li_parse_relative_posted_text(strong_text)
+        if parsed:
+            strong_matches.append((parsed, strong))
+
+    if len(strong_matches) == 1:
+        return strong_matches[0][0]
+
+    for parsed, strong in strong_matches:
+        try:
+            parent_text = (
+                strong.evaluate(
+                    "el => { const p = el.closest('p'); return p ? p.innerText : ''; }"
+                )
+                or ""
+            ).lower()
+        except Exception:
+            continue
+        if "applicant" in parent_text:
+            return parsed
+        if "·" in parent_text and _LI_RELATIVE_POSTED_RE.search(parent_text):
+            return parsed
+
+    return None
+
+
+def _li_extract_time_posted_from_page(page) -> str:
+    """Primary BEM selector, then flagship3 fallback. Returns relative text or 'Unknown'."""
+    time_posted = "Unknown"
+
+    try:
+        page.wait_for_selector(_LI_PRIMARY_POSTED_SELECTOR, timeout=3000)
+        container = page.query_selector(_LI_PRIMARY_POSTED_SELECTOR)
+        if container:
+            parsed = _li_parse_relative_posted_text(container.inner_text())
+            if parsed:
+                time_posted = parsed
+    except Exception:
+        pass
+
+    if time_posted == "Unknown":
+        try:
+            fallback_posted = _li_extract_time_posted_flagship3_fallback(page)
+            if fallback_posted:
+                time_posted = fallback_posted
+        except Exception:
+            pass
+
+    return time_posted
+
+
+_LI_PRIMARY_HM_SELECTOR = "span.jobs-poster__name strong"
+_LI_NOT_SPECIFIED_HM = "Not Specified"
+_INVALID_HM = frozenset({"", "not specified", "unknown", "nan", "none"})
+_LI_POSTER_SECTION_MARKERS = (
+    "meet the hiring team",
+    "job poster",
+    "posted by",
+)
+_LI_HM_NOISE_RE = re.compile(
+    r"(recruiter at|hiring manager at|engineer at|•|\||\bat\b|1st|2nd|3rd|"
+    r"connection|followers|i am hiring|people you can reach)",
+    re.I,
+)
+
+
+def _li_is_valid_hiring_manager(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return text.lower() not in _INVALID_HM
+
+
+def _li_normalize_hiring_manager(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    first_line = text.split("\n", 1)[0].strip()
+    if not _li_is_valid_hiring_manager(first_line):
+        return ""
+    if _LI_HM_NOISE_RE.search(first_line):
+        return ""
+    if len(first_line) > 80:
+        return ""
+    return first_line
+
+
+def _li_scroll_job_detail_for_hm(page) -> None:
+    """Mirror acquisition scroll before HM extraction."""
+    for _ in range(5):
+        page.mouse.wheel(0, 1500)
+        page.wait_for_timeout(1200)
+    page.wait_for_timeout(2000)
+
+
+def _li_extract_hiring_manager_flagship3_fallback(page) -> str | None:
+    """Poster-section fallback when primary BEM selector misses."""
+    try:
+        for paragraph in page.query_selector_all("main p"):
+            try:
+                marker_text = (paragraph.inner_text() or "").strip().lower()
+            except Exception:
+                continue
+            if not any(marker in marker_text for marker in _LI_POSTER_SECTION_MARKERS):
+                continue
+            candidate = paragraph.evaluate(
+                """el => {
+                    let node = el;
+                    for (let depth = 0; depth < 10 && node; depth++) {
+                        node = node.parentElement;
+                        if (!node) break;
+                        const links = node.querySelectorAll('a[href*="/in/"]');
+                        let best = '';
+                        for (const link of links) {
+                            const raw = (link.innerText || '').trim();
+                            if (!raw) continue;
+                            const line = raw.split('\\n').map(s => s.trim()).filter(Boolean)[0] || '';
+                            if (!line) continue;
+                            if (!best || line.length < best.length) best = line;
+                        }
+                        if (best) return best;
+                    }
+                    return '';
+                }"""
+            )
+            normalized = _li_normalize_hiring_manager(str(candidate or ""))
+            if normalized:
+                return normalized
+    except Exception:
+        pass
+    return None
+
+
+def _li_extract_hiring_manager_from_page(page) -> str:
+    """Primary BEM selector, then flagship3 fallback. Returns name or 'Not Specified'."""
+    _li_scroll_job_detail_for_hm(page)
+    hiring_manager = ""
+
+    try:
+        hiring_manager_el = page.query_selector(_LI_PRIMARY_HM_SELECTOR)
+        if hiring_manager_el:
+            hiring_manager = _li_normalize_hiring_manager(
+                hiring_manager_el.inner_text() or ""
+            )
+    except Exception:
+        pass
+
+    if not hiring_manager:
+        try:
+            fallback_hm = _li_extract_hiring_manager_flagship3_fallback(page)
+            if fallback_hm:
+                hiring_manager = fallback_hm
+        except Exception:
+            pass
+
+    if hiring_manager:
+        return hiring_manager
+    return _LI_NOT_SPECIFIED_HM
 
 
 def _li_parse_qualification_card_text(text: str) -> tuple[str, str, str, str]:
@@ -473,7 +785,7 @@ _SHOW_MORE_SCOPED_CANDIDATES = [
     ("show_more_jobs", "button:has-text('Show more jobs')"),
 ]
 
-# Pagination next (distinct URL page).
+# Pagination next (distinct URL page) — classic LinkedIn jobs search only.
 _NEXT_PAGE_SCOPED_CANDIDATES = [
     ("jobs_pagination_next", "button.jobs-search-pagination__button--next"),
     (
@@ -488,15 +800,43 @@ _NEXT_PAGE_SCOPED_CANDIDATES = [
     ),
 ]
 
+# How You Fit / Top Applicant feed — React pagination (data-testid), qual URLs only.
+_QUALIFICATION_NEXT_PAGE_CANDIDATES = [
+    (
+        "qual_pagination_next_visible",
+        'button[data-testid="pagination-controls-next-button-visible"]',
+    ),
+    (
+        "qual_pagination_next_testid",
+        'button[data-testid*="pagination-controls-next-button"]',
+    ),
+    (
+        "qual_pagination_next_testid_alt",
+        'button[data-testid*="pagination-control-next-button"]',
+    ),
+]
 
-def _li_probe_next_button_state(jobs_root) -> dict:
+
+def _li_next_page_candidates(url: str) -> list[tuple[str, str]]:
+    """Candidate selectors for Next pagination; qual testids only on How You Fit URLs."""
+    if _li_is_qualification_landing_url(url):
+        return _QUALIFICATION_NEXT_PAGE_CANDIDATES + _NEXT_PAGE_SCOPED_CANDIDATES
+    return _NEXT_PAGE_SCOPED_CANDIDATES
+
+
+def _li_probe_next_button_state(
+    jobs_root,
+    *,
+    candidates: list[tuple[str, str]] | None = None,
+) -> dict:
     out = {
         "linkedin_next_button_detected": False,
         "linkedin_next_button_disabled": None,
     }
     if jobs_root is None:
         return out
-    for _label, sel in _NEXT_PAGE_SCOPED_CANDIDATES:
+    cands = candidates if candidates is not None else _NEXT_PAGE_SCOPED_CANDIDATES
+    for _label, sel in cands:
         try:
             loc = jobs_root.locator(sel).first
             if loc.count() == 0 or not loc.is_visible():
@@ -511,6 +851,36 @@ def _li_probe_next_button_state(jobs_root) -> dict:
         except Exception:
             continue
     return out
+
+
+def _li_probe_next_button_state_page(page) -> dict:
+    """Page-level Next probe (qualification landing fallback when jobs_root misses)."""
+    return _li_probe_next_button_state(
+        page, candidates=_li_next_page_candidates(page.url)
+    )
+
+
+def _li_log_qualification_pagination_diagnostics(
+    page,
+    jobs_root,
+    jobs_root_desc: str | None,
+) -> None:
+    if not _li_is_qualification_landing_url(page.url):
+        return
+    candidates = _li_next_page_candidates(page.url)
+    scoped = _li_probe_next_button_state(jobs_root, candidates=candidates)
+    page_level = _li_probe_next_button_state(page, candidates=candidates)
+    start = _li_url_jobs_start_param(page.url)
+    _li_diag_log(
+        "qualification_pagination_diag "
+        f"cards={_li_count_job_cards(page)} "
+        f"jobs_root={jobs_root_desc!r} "
+        f"page_num={_li_page_number_from_start(start)} "
+        f"scoped_next={scoped['linkedin_next_button_detected']} "
+        f"scoped_next_disabled={scoped['linkedin_next_button_disabled']} "
+        f"page_level_next={page_level['linkedin_next_button_detected']} "
+        f"page_level_next_disabled={page_level['linkedin_next_button_disabled']}"
+    )
 
 
 def _li_probe_show_more_state(jobs_root) -> bool:
@@ -610,9 +980,17 @@ def _li_detect_feed_reset(
 def _li_find_scoped_control(page, jobs_root, candidates):
     if jobs_root is None:
         return None, None
+    return _li_find_control_on_root(jobs_root, candidates)
+
+
+def _li_find_page_level_control(page, candidates):
+    return _li_find_control_on_root(page, candidates)
+
+
+def _li_find_control_on_root(root, candidates):
     for label, sel in candidates:
         try:
-            loc = jobs_root.locator(sel).first
+            loc = root.locator(sel).first
             if loc.count() == 0 or not loc.is_visible():
                 continue
             if not _li_expansion_element_passes_exclusion(loc):
@@ -996,17 +1374,47 @@ def _li_try_next_page_transition(
     scroll_loc_desc: str,
     metrics: _LinkedInTraversalMetrics,
     trav_ctx: _LinkedInTraversalContext,
+    *,
+    jobs_root_desc: str | None = None,
 ) -> tuple[bool, object, str, object]:
     """
     Phase 3: Next-page pagination using existing hydration (unchanged).
     Returns (success, scroll_loc, scroll_desc, jobs_root).
     """
-    next_state = _li_probe_next_button_state(jobs_root)
+    scoped_state = _li_probe_next_button_state(
+        jobs_root, candidates=_li_next_page_candidates(page.url)
+    )
+    qual_landing = _li_is_qualification_landing_url(page.url)
+    page_state = (
+        _li_probe_next_button_state(
+            page, candidates=_li_next_page_candidates(page.url)
+        )
+        if qual_landing
+        else scoped_state
+    )
+    use_page_level = (
+        qual_landing
+        and not scoped_state["linkedin_next_button_detected"]
+        and page_state["linkedin_next_button_detected"]
+    )
+    next_state = page_state if use_page_level else scoped_state
+    next_scope = "page_level" if use_page_level else "jobs_root"
+
+    if qual_landing:
+        _li_log_qualification_pagination_diagnostics(page, jobs_root, jobs_root_desc)
+
     if not next_state["linkedin_next_button_detected"]:
-        _li_diag_log("expansion_control_detected=false reason=no_next_button", verbose=True)
+        _li_diag_log(
+            "expansion_control_detected=false reason=no_next_button "
+            f"scoped={scoped_state['linkedin_next_button_detected']} "
+            f"page_level={page_state['linkedin_next_button_detected']}",
+            verbose=True,
+        )
         return False, scroll_loc, scroll_loc_desc, jobs_root
     if next_state["linkedin_next_button_disabled"]:
-        _li_diag_log("linkedin_next_page_click=skipped reason=next_disabled")
+        _li_diag_log(
+            f"linkedin_next_page_click=skipped reason=next_disabled scope={next_scope}"
+        )
         return False, scroll_loc, scroll_loc_desc, jobs_root
 
     _li_nudge_inner_scroll_if_far_from_bottom(
@@ -1016,12 +1424,21 @@ def _li_try_next_page_transition(
         max_nudges=_INNER_LIST_BOTTOM_MAX_NUDGES,
     )
 
-    ctrl, clabel = _li_find_scoped_control(page, jobs_root, _NEXT_PAGE_SCOPED_CANDIDATES)
+    next_candidates = _li_next_page_candidates(page.url)
+    if use_page_level:
+        ctrl, clabel = _li_find_page_level_control(page, next_candidates)
+    else:
+        ctrl, clabel = _li_find_scoped_control(
+            page, jobs_root, next_candidates
+        )
     if ctrl is None:
         return False, scroll_loc, scroll_loc_desc, jobs_root
 
     cur = _li_count_job_cards(page)
-    _li_diag_log(f"expansion_control_detected=true label={clabel!r}", verbose=True)
+    _li_diag_log(
+        f"expansion_control_detected=true label={clabel!r} scope={next_scope}",
+        verbose=True,
+    )
     _li_log_expansion_preclick_diagnostics(ctrl, scroll_loc, page)
 
     if not _li_prepare_expansion_control_for_click(ctrl, page):
@@ -1046,7 +1463,7 @@ def _li_try_next_page_transition(
     _li_humanized_pause(page, 1200, 2600, metrics, "pre_click")
     _li_humanized_pause(page, 250, 900, metrics, "pre_click")
 
-    _li_diag_log(f"linkedin_next_page_click=true control={clabel!r}")
+    _li_diag_log(f"linkedin_next_page_click=true control={clabel!r} scope={next_scope}")
     try:
         ctrl.click(timeout=10000)
         _li_diag_log("expansion_click_success")
@@ -1097,6 +1514,12 @@ def _li_try_next_page_transition(
         _li_diag_log(
             f"linkedin_page_number_detected={_li_page_number_from_start(start_after)}"
         , verbose=True)
+        if qual_landing:
+            _li_diag_log(
+                "qualification_pagination_completed "
+                f"scope={next_scope} page_num={_li_page_number_from_start(start_after)} "
+                f"cards={new_c}"
+            )
         _li_diag_log("expansion_growth_detected")
 
         active_scroll_loc, active_scroll_desc = _li_find_inner_jobs_scroll_locator(page)
@@ -1215,6 +1638,7 @@ def _li_orchestrate_expansion_then_resume_traversal(
             active_scroll_desc,
             metrics,
             trav_ctx,
+            jobs_root_desc=jobs_root_desc,
         )
         if not ok:
             metrics.next_page_failures += 1
@@ -1482,7 +1906,10 @@ def _li_scrape_qualification_landing_cards_into(
                 continue
 
             card.click()
-            page.wait_for_timeout(2000)
+            if metrics is not None:
+                _li_humanized_pause(page, 1400, 3200, metrics, "qual_card_click")
+            else:
+                _li_human_pause(page, 1400, 3200)
             job_id = _li_url_current_job_id(page.url)
             if job_id and job_id in processed_job_ids:
                 if metrics is not None:
@@ -1496,6 +1923,12 @@ def _li_scrape_qualification_landing_cards_into(
                 title = pt_title
             if pt_company:
                 company = pt_company
+
+            posted_from_page = _li_extract_time_posted_from_page(page)
+            if posted_from_page != "Unknown":
+                time_posted = posted_from_page
+
+            hiring_manager = _li_extract_hiring_manager_from_page(page)
 
             link = (
                 f"https://www.linkedin.com/jobs/view/{job_id}/"
@@ -1511,7 +1944,7 @@ def _li_scrape_qualification_landing_cards_into(
                 "source": "linkedin",
                 "time_posted": time_posted,
                 "applied": False,
-                "hiring_manager": "Not Specified",
+                "hiring_manager": hiring_manager,
                 "score": 0,
             }
 
@@ -1646,32 +2079,12 @@ def _li_scrape_visible_job_cards_into(
                 f"card_index={idx} pass={dom_pass_label!r} post_click url={page.url[:240]}"
             , verbose=True)
 
-            time_posted = "Unknown"
-
-            try:
-                page.wait_for_selector(
-                    "div.job-details-jobs-unified-top-card__primary-description-container",
-                    timeout=3000,
-                )
-
-                container = page.query_selector(
-                    "div.job-details-jobs-unified-top-card__primary-description-container"
-                )
-
-                if container:
-                    text = container.inner_text().lower()
-
-                    match = re.search(
-                        r"(\d+\s+(hour|day|week)s?\s+ago)", text
-                    )
-
-                    if match:
-                        time_posted = match.group(1)
-
-            except Exception as e:
+            time_posted = _li_extract_time_posted_from_page(page)
+            if time_posted != "Unknown":
                 _li_diag_log(
-                    f"card_index={idx} pass={dom_pass_label!r} time_posted_block_failed: {e!r}"
-                , verbose=True)
+                    f"card_index={idx} pass={dom_pass_label!r} time_posted={time_posted!r}",
+                    verbose=True,
+                )
 
             applied = False
 
@@ -1689,26 +2102,9 @@ def _li_scrape_visible_job_cards_into(
                     f"card_index={idx} pass={dom_pass_label!r} applied_status_read_failed: {e!r}"
                 , verbose=True)
 
-            hiring_manager = "Not Specified"
-
-            try:
-                for _ in range(5):
-                    page.mouse.wheel(0, 1500)
-                    page.wait_for_timeout(1200)
-
-                page.wait_for_timeout(2000)
-
-                hiring_manager_el = page.query_selector(
-                    "span.jobs-poster__name strong"
-                )
-
-                if hiring_manager_el:
-                    hiring_manager = hiring_manager_el.inner_text().strip()
-
-                    print(f"✅ Hiring Manager Found: {hiring_manager}")
-
-            except Exception as e:
-                _li_diag_log(f"hiring_manager_extraction_failed: {e!r}")
+            hiring_manager = _li_extract_hiring_manager_from_page(page)
+            if hiring_manager != _LI_NOT_SPECIFIED_HM:
+                print(f"✅ Hiring Manager Found: {hiring_manager}")
 
             company = (
                 company_elem.inner_text().strip()
@@ -1879,15 +2275,26 @@ def scrape_linkedin_jobs(search_url, query_run=None):
             if debug_linkedin_enabled():
                 print("\nOpening LinkedIn jobs page...")
 
-            page.goto(search_url)
+            nav_spec = (query_run or {}).get("qualification_navigation")
+            if nav_spec:
+                _li_navigate_to_qualification_landing(
+                    page,
+                    entry_url=nav_spec.get("entry_url"),
+                    keywords=str(nav_spec.get("keywords", "") or ""),
+                    geo_id=str(nav_spec.get("geo_id", "") or ""),
+                )
+            else:
+                page.goto(search_url)
 
-            initial_wait_ms = (
-                10000 if _li_is_qualification_landing_url(search_url) else 8000
+            on_qual_landing = bool(
+                nav_spec or _li_is_qualification_landing_url(page.url)
             )
-            page.wait_for_timeout(initial_wait_ms)
+            initial_wait_ms = 2500 if nav_spec else 8000
+            if initial_wait_ms > 0:
+                _li_human_pause(page, initial_wait_ms, initial_wait_ms + 800)
             _li_diag_log(f"post_initial_wait url={page.url[:240]}", verbose=True)
 
-            skip_jobs_tab = _li_is_qualification_landing_url(page.url)
+            skip_jobs_tab = on_qual_landing
             if skip_jobs_tab:
                 _li_diag_log(
                     "Jobs tab click skipped: qualification_landing_url",
@@ -1895,10 +2302,10 @@ def scrape_linkedin_jobs(search_url, query_run=None):
                 )
                 try:
                     _li_job_card_locator(page).first.wait_for(
-                        state="visible", timeout=20000
+                        state="visible", timeout=12000
                     )
                     _li_diag_log(
-                        f"qualification_cards_ready count={_li_count_job_cards(page)}",
+                        f"qualification_cards_detected count={_li_count_job_cards(page)}",
                         verbose=True,
                     )
                 except Exception as e:
@@ -1911,11 +2318,22 @@ def scrape_linkedin_jobs(search_url, query_run=None):
                 except Exception as e:
                     _li_diag_log(f"Jobs tab click skipped: {e!r}", verbose=True)
 
-            page.wait_for_timeout(5000)
+            if skip_jobs_tab:
+                _li_human_pause(page, 1500, 3000)
+            else:
+                page.wait_for_timeout(5000)
             _li_diag_log(
                 f"post_tab_wait cards={_li_count_job_cards(page)} url={page.url[:240]}"
             , verbose=True)
 
+            jobs_root, jobs_root_desc = _li_get_jobs_expansion_root(page)
+            if jobs_root is not None:
+                _li_diag_log(
+                    f"qualification_jobs_root_selected desc={jobs_root_desc!r}"
+                    if on_qual_landing
+                    else f"jobs_expansion_root desc={jobs_root_desc!r}",
+                    verbose=True,
+                )
             scroll_loc, scroll_loc_desc = _li_find_inner_jobs_scroll_locator(page)
             if scroll_loc is not None:
                 _li_diag_log(

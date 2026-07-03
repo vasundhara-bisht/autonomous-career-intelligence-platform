@@ -18,9 +18,8 @@ from scraper.instahyre_feed_orchestrator import run_instahyre_feed_session
 # =========================
 # 📦 IMPORT JOBS
 # =========================
-from agent.ai_batch_scorer import batch_score_jobs, validate_ai_batch_results
-from agent.ai_runtime_config import resolve_batch_size, resolve_debug_limit
-from agent.profile_loader import load_candidate_profile
+from agent.ai_scoring_orchestrator import run_batch_ai_scoring
+from agent.ai_runtime_config import resolve_debug_limit
 from agent.filter_engine import apply_stage1_filter
 from agent.dedup_engine import deduplicate_jobs
 from agent.job_description_persistence import (
@@ -30,6 +29,7 @@ from agent.job_description_persistence import (
     try_hydrate_from_store,
 )
 from agent.normalizer import normalize_job
+from agent.posted_date_derive import derive_posted_at_date
 from agent.logger import (
     Stage1Aggregator,
     debug_stage1_enabled,
@@ -45,7 +45,12 @@ from agent.historical_persistence import (
     load_historical_index,
     lookup_historical_row,
 )
-from agent.pipeline_stages import is_explicit_ai_status, is_user_managed_pipeline_stage
+from agent.pipeline_stages import (
+    is_explicit_ai_status,
+    is_user_managed_pipeline_stage,
+    should_skip_expensive_acquisition,
+)
+from db.services.recruiter_enrichment import is_hiring_manager_sentinel
 from agent.job_identity import (
     generate_job_key_v2,
     instrument_jobs_identity_v2,
@@ -513,6 +518,12 @@ def _is_operator_rejected_historical(historical_row: dict) -> bool:
     return _historical_pipeline_stage(historical_row) == "Rejected"
 
 
+def materialize_applied_skip_job(job: dict) -> None:
+    """LinkedIn scrape-time Applied with no historical row: AI-exempt, no prior scoring."""
+    job["applied"] = True
+    job["ai_status"] = "not_required"
+
+
 def materialize_fully_processed_job(job: dict, historical_row: dict) -> None:
     """
     Merge historical memory into the scrape dict for export/final merge.
@@ -563,6 +574,15 @@ def materialize_fully_processed_job(job: dict, historical_row: dict) -> None:
         and _historical_pipeline_stage(historical_row) in _PROMOTABLE_PIPELINE_STAGES
     ):
         job["applied"] = True
+
+    scrape_hm = job.get("hiring_manager")
+    historical_hm = historical_row.get("hiring_manager")
+    if (
+        is_hiring_manager_sentinel(scrape_hm)
+        and historical_hm is not None
+        and not is_hiring_manager_sentinel(historical_hm)
+    ):
+        job["hiring_manager"] = str(historical_hm).strip()
 
 
 def _production_final_merge_key(job: dict) -> str:
@@ -726,6 +746,13 @@ if __name__ == "__main__":
             print(f"  Stubs built: {interested_stats.get('stubs_built', 0)}")
             print(f"  Skipped (no job_id): {interested_stats.get('skipped_no_job_id', 0)}")
             print(f"  Duplicates skipped: {interested_stats.get('duplicates_skipped', 0)}")
+            if interested_stats.get("detail_enrich_enabled"):
+                print(f"  Detail enrich attempted: {interested_stats.get('detail_attempted', 0)}")
+                print(f"  Detail enriched: {interested_stats.get('detail_enriched', 0)}")
+                print(
+                    f"  Detail open failed: {interested_stats.get('detail_open_failed', 0)}"
+                )
+                print(f"  Detail rejected: {interested_stats.get('detail_rejected', 0)}")
             if interested_report.get("enabled"):
                 print(f"  DB jobs upserted: {interested_report.get('upserted', 0)}")
                 print(f"  DB state updated: {interested_report.get('state_updated', 0)}")
@@ -778,6 +805,8 @@ if __name__ == "__main__":
     print("🧼 NORMALIZING JOB DATA...")
 
     all_jobs = [normalize_job(job) for job in all_jobs]
+    scrape_day = datetime.now(UTC).date()
+    all_jobs = [derive_posted_at_date(job, scrape_day) for job in all_jobs]
 
     print("✅ Normalization Completed")
     print(f"{norm_banner}\n")
@@ -793,7 +822,7 @@ if __name__ == "__main__":
 
     historical_lookup_trace: dict = {}
 
-    fully_processed_jobs = []
+    fully_processed_jobs = []  # routing bucket: skip Stage 1 / descriptions / AI this run
     needs_ai_only_jobs = []
     brand_new_jobs = []
 
@@ -806,7 +835,11 @@ if __name__ == "__main__":
         )
 
         if not historical_row:
-            brand_new_jobs.append(job)
+            if should_skip_expensive_acquisition(job, None):
+                materialize_applied_skip_job(job)
+                fully_processed_jobs.append(job)
+            else:
+                brand_new_jobs.append(job)
             continue
 
         # Lightweight passthrough hygiene: prevent historical garbage propagation
@@ -814,7 +847,7 @@ if __name__ == "__main__":
             brand_new_jobs.append(job)
             continue
 
-        if is_user_managed_pipeline_stage(_historical_pipeline_stage(historical_row)):
+        if should_skip_expensive_acquisition(job, historical_row):
             materialize_fully_processed_job(job, historical_row)
             fully_processed_jobs.append(job)
         elif _historical_job_needs_ai_fallback(historical_row):
@@ -829,7 +862,7 @@ if __name__ == "__main__":
 
     print("\n--- Identity routing (historical lookup) ---")
     print(
-        f"  Fully processed (historical AI materialized; skip Stage 1 / descriptions / AI): "
+        f"  Skipped expensive processing (historical AI materialized or Applied skip): "
         f"{split_fully_processed}"
     )
     print(f"  Needs AI only (hydrate + AI queue): {split_needs_ai_only}")
@@ -1056,31 +1089,9 @@ if __name__ == "__main__":
     ai_capped_count = min(ai_candidates_before_limit, DEBUG_LIMIT)
     ai_skipped_by_cap = max(0, ai_candidates_before_limit - DEBUG_LIMIT)
 
-    persistent_jobs = list(combined_ai_queue)
-    ai_scoring_jobs = persistent_jobs[:DEBUG_LIMIT]
-    pending_ai_jobs = persistent_jobs[DEBUG_LIMIT:]
-
-    for job in persistent_jobs:
-        job.pop("score", None)
-        job.pop("ai_score", None)
-        job["reason"] = ""
-        job["ai_status"] = "pending"
-
-    for job in pending_ai_jobs:
-        job["ai_status"] = "skipped_by_cap"
-
     print(
         f"🧠 needs_ai_only jobs routed directly to AI: {split_needs_ai_only}"
     )
-    print("\n--- AI scoring cap (DEBUG_LIMIT) ---")
-    print(f"  Total AI candidates: {ai_candidates_before_limit}")
-    print(f"  Capped for scoring: {ai_capped_count}")
-    print(f"  Pending/skipped by cap: {ai_skipped_by_cap}")
-    print(f"  Historical persistence cohort: {len(persistent_jobs)}")
-    if ai_skipped_by_cap > 0:
-        print(
-            "  Note: Jobs skipped by cap are persisted with blank AI score for later scoring"
-        )
 
     # =========================================================
     # 🔴 STAGE D — AI EVALUATION
@@ -1105,73 +1116,12 @@ if __name__ == "__main__":
     # - reasoning
     # =========================================================
 
-    BATCH_SIZE = resolve_batch_size()
-    ai_results_applied = 0
-    ai_candidate_count = len(ai_scoring_jobs)
-
-    if ai_candidate_count > 0:
-        import time
-
-        total_batches = (ai_candidate_count + BATCH_SIZE - 1) // BATCH_SIZE
-        ai_banner = "=" * 60
-        print(f"\n{ai_banner}")
-        print("🤖 STARTING AI BATCH SCORING")
-        print(f"{ai_banner}\n")
-        print(f"📦 Total AI Candidate Jobs: {ai_candidate_count}")
-        print(f"🧠 Total AI Scoring Batches: {total_batches}")
-        print(f"📏 Batch Size: {BATCH_SIZE}\n")
-
-        candidate_profile = load_candidate_profile()
-        print(
-            f"  Candidate profile: {paths.ai_candidate_profile_path()} "
-            f"({len(candidate_profile)} chars)\n"
-        )
-
-        ai_t0 = time.monotonic()
-        batches_processed = 0
-
-        for batch_num, i in enumerate(
-            range(0, ai_candidate_count, BATCH_SIZE), start=1
-        ):
-            batch = ai_scoring_jobs[i : i + BATCH_SIZE]
-            batch_t0 = time.monotonic()
-            batch_payload = batch_score_jobs(batch, candidate_profile)
-            batch_sec = time.monotonic() - batch_t0
-
-            if not batch_payload or not batch_payload.get("request_ok"):
-                print(f"⚠️ Batch {batch_num} failed (skipping, {batch_sec:.1f}s)")
-                continue
-
-            normalized_results = batch_payload.get("results") or []
-            valid_results, skipped_invalid = validate_ai_batch_results(
-                normalized_results, batch_size=len(batch)
-            )
-
-            batches_processed += 1
-            ai_results_applied += len(valid_results)
-            print(
-                f"✅ Batch {batch_num} Complete "
-                f"(input_batch_size={len(batch)}, "
-                f"parsed_result_count={batch_payload.get('parsed_result_count', 0)}, "
-                f"valid_results_applied={len(valid_results)}, "
-                f"skipped_invalid_results={skipped_invalid}, "
-                f"normalization_strategy_used={batch_payload.get('normalization_strategy_used', 'unknown')}, "
-                f"{batch_sec:.1f}s)"
-            )
-
-            for result in valid_results:
-                idx = result["index"]
-                ai_scoring_jobs[i + idx]["score"] = result["score"]
-                ai_scoring_jobs[i + idx]["reason"] = result["reason"]
-                ai_scoring_jobs[i + idx]["ai_status"] = "scored"
-
-        ai_total_sec = time.monotonic() - ai_t0
-        print(f"\n{ai_banner}")
-        print("🤖 AI BATCH SCORING COMPLETE")
-        print(f"{ai_banner}\n")
-        print(f"✅ Total Batches Processed: {batches_processed}")
-        print(f"✅ Total Jobs AI Scored: {ai_results_applied}")
-        print(f"✅ Total Duration: {ai_total_sec:.1f}s\n")
+    scoring_result = run_batch_ai_scoring(combined_ai_queue, verbose=True)
+    ai_scoring_jobs = scoring_result.ai_scoring_jobs
+    pending_ai_jobs = scoring_result.pending_ai_jobs
+    persistent_jobs = scoring_result.persistent_jobs
+    ai_results_applied = scoring_result.stats.ai_results_applied
+    batches_processed = scoring_result.stats.batches_processed
 
     newly_ai_scored_jobs = [
         job for job in ai_scoring_jobs if job.get("ai_status") == "scored"
@@ -1245,7 +1195,7 @@ if __name__ == "__main__":
     print("📊 PIPELINE SUMMARY")
     print(f"{pipeline_banner}\n")
     print("↓ Job Routing\n")
-    print(f"✅ Fully Processed: {split_fully_processed}")
+    print(f"✅ Skipped expensive processing: {split_fully_processed}")
     print(f"🧠 Needs AI Only: {split_needs_ai_only}")
     print(f"🆕 Brand New Jobs: {split_brand_new}\n")
     print(

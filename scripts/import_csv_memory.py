@@ -505,7 +505,6 @@ def _upsert_observations(
             "source": _text(row.get("source")),
             "observed_at": _parse_dt(row.get("last_seen"))
             or datetime.now(UTC).replace(tzinfo=None),
-            "currently_active": _boolish(row.get("currently_active")),
             "times_seen": _int_or_none(row.get("times_seen")) or 1,
         }
         existing_id = existing.get(job_id)

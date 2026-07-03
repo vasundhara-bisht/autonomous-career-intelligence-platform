@@ -11,8 +11,11 @@ venv/
 .env.*
 !.env.example
 
+# Private resume-derived candidate profile (use AI_CANDIDATE_PROFILE_PATH locally)
+config/profiles/ai_candidate_profile_v2.md
+
 # Runtime persistence (live state under data/)
-/data/*
+/data/
 !data/.gitkeep
 
 # Legacy root-level runtime files (pre-migration; migrate via paths.migrate_legacy_root_runtime_files)
