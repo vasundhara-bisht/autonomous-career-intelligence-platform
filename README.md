@@ -82,7 +82,7 @@ Design rationale and guardrails: [docs/AI_SYSTEM_DESIGN.md](docs/AI_SYSTEM_DESIG
 
 ## Live Demo
 
-Explore the full dashboard, hosted, with no setup: **`<LIVE_DEMO_URL>`**
+Explore the full dashboard, hosted, with no setup: **https://career-intelligence-demo.streamlit.app**
 
 It's the real dashboard surface backed by an anonymized sandbox seed — Recommended Actions, listings, CRM, outreach, discovery, and health sections are all populated and interactive. External automation and live API calls are disabled in the sandbox. Full details: [docs/DEMO_MODE.md](docs/DEMO_MODE.md).
 
